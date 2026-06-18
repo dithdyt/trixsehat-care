@@ -332,9 +332,16 @@ export default function AdminDashboardPage() {
         <nav className="sticky top-5 z-20 rounded-[2rem] border border-white/80 bg-white/80 px-5 py-4 shadow-[0_20px_45px_rgba(15,23,42,0.08)] backdrop-blur-xl">
           <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
             <div>
-              <p className="font-sans text-2xl font-bold text-[#0F766E]">
-                TrixSehat HIS
-              </p>
+              <div className="flex items-center gap-2.5">
+                <img
+                  src="/trixsehat-icon.png"
+                  alt="TrixSehat Logo"
+                  className="h-8 w-8 object-contain"
+                />
+                <p className="font-sans text-2xl font-bold text-[#0F766E]">
+                  TrixSehat HIS
+                </p>
+              </div>
               <p className="text-sm text-slate-500">
                 Portal Admin Kasir & Farmasi Terpadu
               </p>

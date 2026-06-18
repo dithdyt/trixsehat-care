@@ -763,9 +763,14 @@ export default function PatientDashboardPage() {
           <div className="flex flex-wrap items-center justify-between gap-4">
             <button
               onClick={() => setActiveTab("dashboard")}
-              className="font-sans text-2xl font-bold tracking-normal text-[#4D5D4E]"
+              className="flex items-center gap-2.5 font-sans text-2xl font-bold tracking-normal text-[#4D5D4E]"
             >
-              TrixSehat
+              <img
+                src="/trixsehat-icon.png"
+                alt="TrixSehat Logo"
+                className="h-8 w-8 object-contain"
+              />
+              <span>TrixSehat</span>
             </button>
 
             <nav className="order-3 flex w-full items-center gap-5 overflow-x-auto text-sm font-semibold text-slate-700 md:order-2 md:w-auto md:gap-6 md:text-base">

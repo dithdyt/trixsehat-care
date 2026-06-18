@@ -87,8 +87,13 @@ export default function StaffLoginPage() {
       <div className="relative mx-auto flex min-h-[calc(100vh-5rem)] max-w-md items-center">
         <Card className="w-full rounded-[1.7rem] border-slate-200/80 bg-white/90 shadow-xl backdrop-blur">
           <CardHeader className="text-center">
-            <CardTitle className="font-sans text-2xl font-bold text-[#0F766E]">
-              TrixSehat HIS - Portal Karyawan
+            <CardTitle className="flex items-center justify-center gap-2.5 font-sans text-2xl font-bold text-[#0F766E]">
+              <img
+                src="/trixsehat-icon.png"
+                alt="TrixSehat Logo"
+                className="h-8 w-8 object-contain"
+              />
+              <span>TrixSehat HIS - Portal Karyawan</span>
             </CardTitle>
             <CardDescription>
               Gerbang masuk tunggal untuk staf medis, kasir, apoteker, dan front

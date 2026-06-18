@@ -373,9 +373,14 @@ export default function MedisDashboardPage() {
           <div className="flex flex-wrap items-center justify-between gap-4">
             <button
               onClick={() => router.replace("/medis")}
-              className="font-sans text-xl font-bold text-[#0F766E]"
+              className="flex items-center gap-2.5 font-sans text-xl font-bold text-[#0F766E]"
             >
-              TrixSehat HIS
+              <img
+                src="/trixsehat-icon.png"
+                alt="TrixSehat Logo"
+                className="h-8 w-8 object-contain"
+              />
+              <span>TrixSehat HIS</span>
             </button>
             <div className="flex items-center gap-3">
               <Button
