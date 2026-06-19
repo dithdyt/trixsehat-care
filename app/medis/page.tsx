@@ -515,7 +515,7 @@ export default function MedisDashboardPage() {
               <CardContent>
                 {!selectedPatient ? (
                   <div className="rounded-2xl border border-dashed bg-slate-50 p-8 text-center text-slate-600">
-                    Pilih pasien dan klik "Buka EMR" untuk mulai pemeriksaan.
+                    Pilih pasien dan klik &quot;Buka EMR&quot; untuk mulai pemeriksaan.
                   </div>
                 ) : (
                   <form onSubmit={saveEmr} className="space-y-4">

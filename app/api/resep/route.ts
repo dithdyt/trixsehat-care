@@ -11,8 +11,11 @@ import {
   user,
 } from "@/db/schema";
 import { getRequestSession } from "@/lib/session";
+import { isBpjsActive } from "@/lib/utils";
 
 export const runtime = "nodejs";
+
+const VALID_STATUS_RESEP: readonly string[] = ["Diproses apotek", "Siap diambil"];
 
 export async function GET(request: Request) {
   ensureDatabase();
@@ -31,6 +34,8 @@ export async function GET(request: Request) {
         userId: rekamMedisElektronik.userId,
         namaPasien: user.name,
         nikPasien: user.nik,
+        bpjsActive: user.bpjsActive,
+        bpjsVerifiedAt: user.bpjsVerifiedAt,
         keluhanUtama: rekamMedisElektronik.keluhanUtama,
         diagnosaIcd10: rekamMedisElektronik.diagnosaIcd10,
         tindakanMedis: rekamMedisElektronik.tindakanMedis,
@@ -44,7 +49,12 @@ export async function GET(request: Request) {
       .orderBy(desc(rekamMedisElektronik.createdAt))
       .all();
 
-    return NextResponse.json({ data: records });
+    return NextResponse.json({
+      data: records.map(({ bpjsVerifiedAt, ...record }) => ({
+        ...record,
+        bpjsActive: isBpjsActive(record.bpjsActive, bpjsVerifiedAt),
+      })),
+    });
   }
 
   if (!targetUserId && guestIdDaftar) {
@@ -55,7 +65,7 @@ export async function GET(request: Request) {
       .limit(1)
       .get();
 
-    if (!guestBooking?.userId) return NextResponse.json({ data: [] });
+    if (!guestBooking?.userId) return NextResponse.json({ data: [], history: [] });
     targetUserId = guestBooking.userId.startsWith("guest-")
       ? guestBooking.userId
       : undefined;
@@ -94,7 +104,27 @@ export async function GET(request: Request) {
     .orderBy(desc(rekamMedisElektronik.createdAt))
     .all();
 
-  return NextResponse.json({ data: records });
+  // "Riwayat Kunjungan" butuh SEMUA RME pasien, bukan hanya yang resepnya masih
+  // tertunda dibayar — `records` di atas memang sengaja dibatasi untuk antrean
+  // resep aktif (dipakai di kartu "Resep Saya"), jadi riwayat kunjungan harus
+  // sumber data terpisah supaya tidak ikut hilang begitu tagihan sudah lunas.
+  const history = db
+    .select({
+      idRme: rekamMedisElektronik.idRme,
+      userId: rekamMedisElektronik.userId,
+      keluhanUtama: rekamMedisElektronik.keluhanUtama,
+      diagnosaIcd10: rekamMedisElektronik.diagnosaIcd10,
+      tindakanMedis: rekamMedisElektronik.tindakanMedis,
+      resepObat: rekamMedisElektronik.resepObat,
+      statusResep: rekamMedisElektronik.statusResep,
+      createdAt: rekamMedisElektronik.createdAt,
+    })
+    .from(rekamMedisElektronik)
+    .where(eq(rekamMedisElektronik.userId, targetUserId))
+    .orderBy(desc(rekamMedisElektronik.createdAt))
+    .all();
+
+  return NextResponse.json({ data: records, history });
 }
 
 export async function PATCH(request: Request) {
@@ -117,6 +147,13 @@ export async function PATCH(request: Request) {
   if (!body.idRme) {
     return NextResponse.json(
       { error: "ValidationError", message: "ID resep wajib diisi." },
+      { status: 400 },
+    );
+  }
+
+  if (body.statusResep && !VALID_STATUS_RESEP.includes(body.statusResep)) {
+    return NextResponse.json(
+      { error: "ValidationError", message: "Status resep tidak valid." },
       { status: 400 },
     );
   }

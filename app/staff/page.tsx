@@ -34,10 +34,13 @@ export default function StaffLoginPage() {
     if (session.isPending) return;
     if (role === "medis") router.replace("/medis");
     if (role === "admin" || role === "super_admin") router.replace("/admin");
-    if (role === "pasien") {
-      authClient.signOut();
-      setMessage("Akses Ditolak. Halaman ini hanya untuk staf internal.");
-    }
+    // Catatan: jangan panggil authClient.signOut() di sini. Effect ini juga bisa
+    // terpicu murni karena session di browser berubah (mis. tab lain login sebagai
+    // pasien) — bukan karena ada upaya login staf yang gagal di halaman ini. Cukup
+    // alihkan keluar dari halaman staf tanpa merusak session aktif milik tab lain.
+    // Kasus "submit form staf tapi ternyata akun pasien" sudah ditangani terpisah
+    // di handleSubmit (dengan signOut yang memang terikat aksi submit di tab ini).
+    if (role === "pasien") router.replace("/");
   }, [role, router, session.isPending]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {

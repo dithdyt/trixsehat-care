@@ -6,10 +6,15 @@ import { ensureDatabase } from "@/db/init";
 import { kamarVkRawat, logAktivitasVk, user } from "@/db/schema";
 import { getRequestSession } from "@/lib/session";
 
+
 export const runtime = "nodejs";
 
-export async function GET() {
+export async function GET(request: Request) {
   ensureDatabase();
+
+  const session = await getRequestSession(request);
+  const role = (session?.user as { role?: string } | undefined)?.role;
+  const isStaff = role === "medis" || role === "admin" || role === "super_admin";
 
   const rooms = db
     .select({
@@ -43,7 +48,12 @@ export async function GET() {
     .limit(12)
     .all();
 
-  return NextResponse.json({ data: rooms, summary, logs });
+  // Pasien/pengunjung publik hanya boleh melihat ketersediaan kamar, bukan data pasien.
+  const responseRooms = isStaff
+    ? rooms
+    : rooms.map(({ idKamar, jenisKamar, status }) => ({ idKamar, jenisKamar, status }));
+
+  return NextResponse.json({ data: responseRooms, summary, logs });
 }
 
 export async function PATCH(request: Request) {

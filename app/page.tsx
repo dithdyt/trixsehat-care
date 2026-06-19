@@ -21,6 +21,7 @@ import {
   Phone,
   ReceiptText,
   ShieldAlert,
+  ShieldCheck,
   Siren,
   Sparkles,
   UserRound,
@@ -38,7 +39,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { authClient, useSession } from "@/lib/auth-client";
-import { cn } from "@/lib/utils";
+import { bpjsDaysRemaining, cn, isBpjsActive } from "@/lib/utils";
 
 type ActiveTab =
   | "dashboard"
@@ -61,21 +62,24 @@ type KamarApi = {
   summary: Record<string, { total: number; available: number }>;
 };
 
+type ResepRecord = {
+  idRme: string;
+  keluhanUtama: string;
+  diagnosaIcd10: string;
+  tindakanMedis: string;
+  statusResep: string;
+  resepObat:
+    | Array<{
+        nama: string;
+        dosis: string;
+        harga: number;
+      }>
+    | null;
+};
+
 type ResepApi = {
-  data: Array<{
-    idRme: string;
-    keluhanUtama: string;
-    diagnosaIcd10: string;
-    tindakanMedis: string;
-    statusResep: string;
-    resepObat:
-      | Array<{
-          nama: string;
-          dosis: string;
-          harga: number;
-        }>
-      | null;
-  }>;
+  data: ResepRecord[];
+  history: ResepRecord[];
 };
 
 type BookingApi = {
@@ -307,6 +311,12 @@ export default function PatientDashboardPage() {
   const [emergencyStatus, setEmergencyStatus] = useState("");
   const [selectedClinic, setSelectedClinic] = useState("");
   const [selectedDoctor, setSelectedDoctor] = useState("");
+  const [bpjsCardNumber, setBpjsCardNumber] = useState("");
+  const [bpjsStage, setBpjsStage] = useState<
+    "idle" | "verifying" | "choose" | "failed"
+  >("idle");
+  const [bpjsShowForm, setBpjsShowForm] = useState(false);
+  const [bpjsMessage, setBpjsMessage] = useState("");
   const [guestActiveBooking, setGuestActiveBooking] =
     useState<BookingRecord | null>(null);
   const session = useSession();
@@ -319,13 +329,20 @@ export default function PatientDashboardPage() {
         phoneNumber?: string | null;
         nik?: string | null;
         address?: string | null;
+        bpjsNumber?: string | null;
+        bpjsActive?: boolean | null;
+        bpjsVerifiedAt?: string | number | Date | null;
       })
     | undefined;
+  const hasActiveBpjs = isBpjsActive(
+    userProfile?.bpjsActive,
+    userProfile?.bpjsVerifiedAt,
+  );
 
   useEffect(() => {
     if (session.isPending) return;
     if (userRole === "medis") router.replace("/medis");
-    if (userRole === "admin") router.replace("/admin");
+    if (userRole === "admin" || userRole === "super_admin") router.replace("/admin");
   }, [router, session.isPending, userRole]);
 
   useEffect(() => {
@@ -381,6 +398,12 @@ export default function PatientDashboardPage() {
     fetcher,
     { refreshInterval: isMember || guestIdDaftar ? 5000 : 0 },
   );
+
+  useEffect(() => {
+    if (isMember) return;
+    if (bookingData && !bookingData.active) setGuestActiveBooking(null);
+  }, [isMember, bookingData]);
+
   const { data: billing, mutate: mutateBilling } = useSWR<BillingApi>(
     isMember
       ? "/api/billing"
@@ -434,9 +457,15 @@ export default function PatientDashboardPage() {
       })),
     ) ?? [];
 
+  // Setelah bookingData pernah berhasil di-fetch untuk guest, percayai nilai server
+  // (termasuk null — mis. setelah dokter membatalkan) daripada guestActiveBooking
+  // yang basi. guestActiveBooking hanya dipakai sebagai placeholder optimistic
+  // sebelum fetch pertama selesai (langsung setelah booking/emergency dibuat).
   const activeBooking = isMember
     ? bookingData?.active ?? null
-    : bookingData?.active ?? guestActiveBooking;
+    : bookingData
+      ? bookingData.active
+      : guestActiveBooking;
   const bookingHistory = bookingData?.history ?? [];
   const today = new Date().toISOString().slice(0, 10);
   const heroActiveBooking =
@@ -450,7 +479,7 @@ export default function PatientDashboardPage() {
         item.tglKunjungan === today &&
         !dismissedCancellationIds.includes(item.id),
     ) ?? null;
-  const hasMedicalHistory = Boolean(resep?.data.length);
+  const hasMedicalHistory = Boolean(resep?.history.length);
   const medicineTotal = prescriptionItems.reduce(
     (sum, item) => sum + item.harga,
     0,
@@ -472,6 +501,20 @@ export default function PatientDashboardPage() {
     const timeout = window.setTimeout(() => setToast(null), 3000);
     return () => window.clearTimeout(timeout);
   }, [toast]);
+
+  useEffect(() => {
+    if (bpjsStage !== "verifying") return;
+
+    const timeout = window.setTimeout(() => setBpjsStage("choose"), 1200);
+    return () => window.clearTimeout(timeout);
+  }, [bpjsStage]);
+
+  useEffect(() => {
+    if (bpjsStage !== "failed") return;
+
+    const timeout = window.setTimeout(() => setBpjsStage("idle"), 1800);
+    return () => window.clearTimeout(timeout);
+  }, [bpjsStage]);
 
   function showToast(type: "success" | "error", message: string) {
     setToast({ type, message });
@@ -632,6 +675,47 @@ export default function PatientDashboardPage() {
     showToast("error", message);
   }
 
+  function handleBpjsVerifySubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!/^\d{13}$/.test(bpjsCardNumber)) {
+      setBpjsMessage("Nomor kartu BPJS harus tepat 13 digit angka.");
+      return;
+    }
+
+    setBpjsMessage("");
+    setBpjsStage("verifying");
+  }
+
+  function simulateBpjsNotFound() {
+    setBpjsStage("failed");
+  }
+
+  async function simulateBpjsFound() {
+    setBpjsMessage("Menyimpan status BPJS...");
+
+    const response = await fetch("/api/bpjs", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ bpjsNumber: bpjsCardNumber }),
+    });
+    const payload = await response.json().catch(() => ({}));
+
+    if (response.ok) {
+      await session.refetch();
+      setBpjsStage("idle");
+      setBpjsShowForm(false);
+      setBpjsMessage("");
+      showToast("success", "BPJS Anda berhasil diverifikasi dan aktif.");
+      return;
+    }
+
+    setBpjsStage("idle");
+    const message = payload.message ?? "Gagal menyimpan status BPJS.";
+    setBpjsMessage(message);
+    showToast("error", message);
+  }
+
   async function handlePasswordSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setPasswordMessage("Mengubah password...");
@@ -677,16 +761,17 @@ export default function PatientDashboardPage() {
 
     setBookingStatus("Membatalkan janji temu...");
 
-    if (!isMember) {
-      setGuestActiveBooking(null);
-      setBookingStatus("Janji temu dibatalkan.");
-      return;
-    }
-
-    const response = await fetch("/api/booking", { method: "PATCH" });
+    const response = isMember
+      ? await fetch("/api/booking", { method: "PATCH" })
+      : await fetch("/api/booking", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ guestIdDaftar }),
+        });
     const payload = await response.json().catch(() => ({}));
 
     if (response.ok) {
+      if (!isMember) setGuestActiveBooking(null);
       await mutateBooking();
       setBookingStatus("Janji temu dibatalkan.");
       return;
@@ -936,6 +1021,12 @@ export default function PatientDashboardPage() {
                         "Semoga sehat selalu. Anda tidak memiliki jadwal pemeriksaan aktif hari ini. Silakan gunakan menu 'Booking Antrean' di bawah untuk menjadwalkan konsultasi dengan dokter spesialis kami."
                       )}
                     </p>
+                    {hasActiveBpjs && (
+                      <div className="mt-4 inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-700">
+                        <ShieldCheck className="h-4 w-4" />
+                        BPJS Anda sudah aktif
+                      </div>
+                    )}
                     {heroActiveBooking && (
                       <Button
                         onClick={() => setActiveTab("janji-temu")}
@@ -1164,7 +1255,7 @@ export default function PatientDashboardPage() {
                       <div className="grid gap-5 md:grid-cols-4">
                         {[
                           ["Nomor antrean", activeBooking.nomorAntrean],
-                          ["Estimasi dilayani", "09:40"],
+                          ["Estimasi dilayani (contoh/simulasi)", "09:40"],
                           ["Lokasi", activeBooking.poliklinik],
                           ["Status", activeBooking.status],
                         ].map(([label, value]) => (
@@ -1255,8 +1346,17 @@ export default function PatientDashboardPage() {
                       <input
                         key={`booking-nik-${bookingDefaultNik}`}
                         name="nik"
+                        required
                         defaultValue={bookingDefaultNik}
+                        inputMode="numeric"
+                        pattern="[0-9]{16}"
+                        maxLength={16}
                         placeholder="16 digit NIK"
+                        onInput={(event) => {
+                          event.currentTarget.value = event.currentTarget.value
+                            .replace(/\D/g, "")
+                            .slice(0, 16);
+                        }}
                         className="h-11 w-full rounded-xl border bg-slate-50 px-3 outline-none ring-[#4D5D4E] focus:ring-2"
                       />
                     </label>
@@ -1279,7 +1379,7 @@ export default function PatientDashboardPage() {
                       <input
                         name="tglKunjungan"
                         type="date"
-                        defaultValue="2026-06-10"
+                        defaultValue={today}
                         className="h-11 w-full rounded-xl border bg-slate-50 px-3 font-mono outline-none ring-[#4D5D4E] focus:ring-2"
                       />
                     </label>
@@ -1338,6 +1438,12 @@ export default function PatientDashboardPage() {
                         className="h-11 w-full rounded-xl border bg-slate-50 px-3 outline-none ring-[#14B8A6] focus:ring-2"
                       />
                     </label>
+                    {hasActiveBpjs && (
+                      <div className="flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-700 md:col-span-3">
+                        <ShieldCheck className="h-4 w-4 shrink-0" />
+                        BPJS Anda aktif — akan digunakan untuk klaim otomatis saat pemeriksaan.
+                      </div>
+                    )}
                     <div className="md:col-span-3">
                       <Button
                         disabled={hasActiveBooking}
@@ -1467,7 +1573,7 @@ export default function PatientDashboardPage() {
                         </div>
                       ) : (
                         <div className="space-y-4">
-                          {resep?.data.map((record) => (
+                          {resep?.history.map((record) => (
                             <div
                               key={record.idRme}
                               className="rounded-2xl border bg-slate-50 p-5"
@@ -1572,9 +1678,9 @@ export default function PatientDashboardPage() {
                     ) : (
                       <div className="grid gap-5 md:grid-cols-3">
                         {[
-                          [Baby, "Trimester", "Minggu 32 dari 40"],
-                          [HeartPulse, "Detak janin", "Normal"],
-                          [ClipboardList, "Checklist", "80% lengkap"],
+                          [Baby, "Trimester (contoh/simulasi)", "Minggu 32 dari 40"],
+                          [HeartPulse, "Detak janin (contoh/simulasi)", "Normal"],
+                          [ClipboardList, "Checklist (contoh/simulasi)", "80% lengkap"],
                         ].map(([Icon, label, value]) => (
                           <div
                             key={label as string}
@@ -1680,6 +1786,148 @@ export default function PatientDashboardPage() {
                       {profileMessage && (
                         <p className="text-sm font-medium text-slate-600">
                           {profileMessage}
+                        </p>
+                      )}
+                    </CardContent>
+                  </Card>
+
+                  <Card className="rounded-[1.7rem] bg-white lg:col-span-2">
+                    <CardHeader>
+                      <CardTitle className="font-sans font-bold">
+                        BPJS Kesehatan (Simulasi)
+                      </CardTitle>
+                      <CardDescription>
+                        Verifikasi kepesertaan BPJS Anda untuk klaim otomatis saat
+                        pemeriksaan dan pembayaran.
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-4">
+                      {hasActiveBpjs && !bpjsShowForm && bpjsStage === "idle" ? (
+                        <div className="flex flex-col gap-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-5 sm:flex-row sm:items-center sm:justify-between">
+                          <div className="flex items-center gap-3">
+                            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-white text-emerald-600">
+                              <ShieldCheck className="h-6 w-6" />
+                            </div>
+                            <div>
+                              <p className="font-semibold text-emerald-700">
+                                AKTIF · Nomor {userProfile?.bpjsNumber}
+                              </p>
+                              <p className="mt-1 text-sm text-emerald-600">
+                                Berlaku hingga{" "}
+                                {formatDateTime(
+                                  new Date(
+                                    new Date(userProfile!.bpjsVerifiedAt!).getTime() +
+                                      90 * 24 * 60 * 60 * 1000,
+                                  ),
+                                )}{" "}
+                                · sisa{" "}
+                                {bpjsDaysRemaining(userProfile?.bpjsVerifiedAt)} hari
+                              </p>
+                            </div>
+                          </div>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            onClick={() => {
+                              setBpjsCardNumber(userProfile?.bpjsNumber ?? "");
+                              setBpjsMessage("");
+                              setBpjsShowForm(true);
+                            }}
+                            className="rounded-full border-emerald-300 text-emerald-700 hover:bg-emerald-100"
+                          >
+                            Verifikasi Ulang
+                          </Button>
+                        </div>
+                      ) : bpjsStage === "verifying" ? (
+                        <div className="flex flex-col items-center gap-3 rounded-2xl border border-dashed bg-slate-50 p-8 text-center">
+                          <div className="h-8 w-8 animate-spin rounded-full border-4 border-teal-100 border-t-[#0F766E]" />
+                          <p className="text-sm font-medium text-slate-600">
+                            Menghubungkan ke server BPJS Kesehatan (simulasi)...
+                          </p>
+                        </div>
+                      ) : bpjsStage === "choose" ? (
+                        <div className="animate-card space-y-4 rounded-2xl border border-dashed bg-slate-50 p-6 text-center">
+                          <p className="text-sm font-medium text-slate-600">
+                            Simulasikan hasil verifikasi BPJS untuk nomor{" "}
+                            <span className="font-mono font-semibold text-slate-900">
+                              {bpjsCardNumber}
+                            </span>
+                            :
+                          </p>
+                          <div className="flex flex-col gap-3 sm:flex-row sm:justify-center">
+                            <Button
+                              type="button"
+                              variant="outline"
+                              onClick={simulateBpjsNotFound}
+                              className="rounded-full border-rose-200 text-rose-600 hover:bg-rose-50"
+                            >
+                              <XCircle className="h-4 w-4" />
+                              Simulasikan: Tidak Ditemukan
+                            </Button>
+                            <Button
+                              type="button"
+                              onClick={simulateBpjsFound}
+                              className="rounded-full bg-[#0F766E] text-white hover:bg-teal-700"
+                            >
+                              <ShieldCheck className="h-4 w-4" />
+                              Simulasikan: Ditemukan & Aktif
+                            </Button>
+                          </div>
+                        </div>
+                      ) : bpjsStage === "failed" ? (
+                        <div className="animate-card flex flex-col items-center gap-3 rounded-2xl border border-rose-200 bg-rose-50 p-8 text-center text-rose-700">
+                          <XCircle className="h-10 w-10" />
+                          <p className="font-semibold">BPJS Tidak Ditemukan</p>
+                          <p className="text-sm">
+                            Silakan periksa kembali nomor kartu Anda dan coba lagi.
+                          </p>
+                        </div>
+                      ) : (
+                        <form
+                          onSubmit={handleBpjsVerifySubmit}
+                          className="grid max-w-md gap-4"
+                        >
+                          <label className="space-y-2">
+                            <span className="text-sm font-medium text-slate-600">
+                              NIK
+                            </span>
+                            <input
+                              value={userProfile?.nik ?? activeBooking?.nik ?? ""}
+                              readOnly
+                              disabled
+                              className="h-11 w-full rounded-xl border bg-slate-100 px-3 font-mono text-slate-500 outline-none"
+                            />
+                          </label>
+                          <label className="space-y-2">
+                            <span className="text-sm font-medium text-slate-600">
+                              Nomor Kartu BPJS
+                            </span>
+                            <input
+                              name="bpjsNumber"
+                              required
+                              inputMode="numeric"
+                              pattern="[0-9]{13}"
+                              maxLength={13}
+                              placeholder="13 digit nomor kartu BPJS"
+                              value={bpjsCardNumber}
+                              onChange={(event) =>
+                                setBpjsCardNumber(
+                                  event.target.value.replace(/\D/g, "").slice(0, 13),
+                                )
+                              }
+                              className="h-11 w-full rounded-xl border bg-slate-50 px-3 font-mono outline-none ring-[#14B8A6] focus:ring-2"
+                            />
+                          </label>
+                          <div>
+                            <Button className={cn("rounded-full px-7", sageButton)}>
+                              Verifikasi
+                            </Button>
+                          </div>
+                        </form>
+                      )}
+                      {bpjsMessage && (
+                        <p className="text-sm font-medium text-rose-600">
+                          {bpjsMessage}
                         </p>
                       )}
                     </CardContent>
@@ -1872,7 +2120,7 @@ function BookingTicketModal({
           <div className="grid gap-3 text-sm">
             {[
               ["Dokter spesialis", ticket.dokter],
-              ["Estimasi pelayanan", "09:40 WIB"],
+              ["Estimasi pelayanan (contoh/simulasi)", "09:40 WIB"],
               ["Lokasi poli", ticket.poliklinik],
             ].map(([label, value]) => (
               <div
@@ -2090,7 +2338,7 @@ function AuthModal({
                     name="nik"
                     required
                     inputMode="numeric"
-                    pattern="[0-9]{1,16}"
+                    pattern="[0-9]{16}"
                     maxLength={16}
                     placeholder="16 digit NIK"
                     onInput={(event) => {
@@ -2231,7 +2479,7 @@ function ProfileModal({
                 required
                 defaultValue={defaultNik}
                 inputMode="numeric"
-                pattern="[0-9]{1,16}"
+                pattern="[0-9]{16}"
                 maxLength={16}
                 placeholder="Nomor Induk Kependudukan"
                 onInput={(event) => {

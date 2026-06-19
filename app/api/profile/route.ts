@@ -41,11 +41,11 @@ export async function PATCH(request: Request) {
     );
   }
 
-  if (!/^\d{1,16}$/.test(nik) || !/^\d+$/.test(phoneNumber)) {
+  if (!/^\d{16}$/.test(nik) || !/^\d+$/.test(phoneNumber)) {
     return NextResponse.json(
       {
         error: "ValidationError",
-        message: "NIK maksimal 16 digit dan nomor handphone hanya boleh angka.",
+        message: "NIK harus tepat 16 digit dan nomor handphone hanya boleh angka.",
       },
       { status: 400 },
     );

@@ -5,6 +5,7 @@ import { db } from "@/db";
 import { ensureDatabase } from "@/db/init";
 import { notifikasi, pembayaranBilling, pendaftaran, user } from "@/db/schema";
 import { getRequestSession } from "@/lib/session";
+import { isBpjsActive } from "@/lib/utils";
 
 export const runtime = "nodejs";
 
@@ -64,6 +65,8 @@ export async function GET(request: Request) {
         idPendaftaran: pembayaranBilling.idPendaftaran,
         namaPasien: user.name,
         nikPasien: user.nik,
+        bpjsActive: user.bpjsActive,
+        bpjsVerifiedAt: user.bpjsVerifiedAt,
         nomorAntrean: pendaftaran.nomorAntrean,
         poliklinik: pendaftaran.poliklinik,
         dokter: pendaftaran.dokter,
@@ -98,7 +101,13 @@ export async function GET(request: Request) {
             .all()
         : [{ total: 0 }];
 
-    return NextResponse.json({ data: records, summary });
+    return NextResponse.json({
+      data: records.map(({ bpjsVerifiedAt, ...record }) => ({
+        ...record,
+        bpjsActive: isBpjsActive(record.bpjsActive, bpjsVerifiedAt),
+      })),
+      summary,
+    });
   }
 
   if (!targetUserId && guestIdDaftar) {

@@ -16,6 +16,15 @@ import { getRequestSession } from "@/lib/session";
 export const runtime = "nodejs";
 
 const ACTIVE_STATUSES = ["MENUNGGU", "DIPANGGIL"] as const;
+const doctorNameByEmail: Record<string, string> = {
+  "dr.coralin@trixsehat.com": "dr. Coralin Santoso, Sp.OG",
+  "dr.lestari@trixsehat.com": "dr. Lestari Ayuningtyas, Sp.OG",
+  "dr.andi@trixsehat.com": "dr. Andi Anemon Wijaya, Sp.A",
+  "dr.ratna@trixsehat.com": "dr. Ratna Puspita, Sp.A",
+  "dr.bima@trixsehat.com": "dr. Bima Satriya, Sp.PD",
+  "dr.farhan@trixsehat.com": "dr. Farhan Mahendra, Sp.B",
+  "drg.dinda@trixsehat.com": "drg. Dinda Maharani",
+};
 const BIAYA_JASA_DOKTER = 120000;
 const BIAYA_ADMINISTRASI = 50000;
 const SIMULATED_RESEP = [
@@ -30,6 +39,17 @@ type ResepInput = {
   harga: number;
   qty?: number;
 };
+
+function isValidResepInput(items: ResepInput[] | undefined) {
+  if (!items) return true;
+
+  return items.every(
+    (item) =>
+      Number.isFinite(item.harga) &&
+      item.harga >= 0 &&
+      (item.qty === undefined || (Number.isFinite(item.qty) && item.qty >= 0)),
+  );
+}
 
 function calculateBillingTotals(resepObat: ResepInput[]) {
   const biayaObat = resepObat.reduce((sum, item) => {
@@ -63,6 +83,13 @@ export async function POST(request: Request) {
     resepObat?: ResepInput[];
     rujukVk?: boolean;
   };
+  if (!isValidResepInput(body.resepObat)) {
+    return NextResponse.json(
+      { error: "ValidationError", message: "Harga atau jumlah obat tidak valid." },
+      { status: 400 },
+    );
+  }
+
   const role = (session.user as { role?: string }).role;
 
   if (role === "medis" && body.idPendaftaran) {
@@ -77,6 +104,22 @@ export async function POST(request: Request) {
       return NextResponse.json(
         { error: "NotFound", message: "Data antrean tidak ditemukan." },
         { status: 404 },
+      );
+    }
+
+    // Cabang ini hanya dimasuki oleh role "medis" (dokter); super_admin/perawat VK
+    // tidak menggunakan endpoint EMR ini di UI. Dokter hanya boleh menyelesaikan
+    // pemeriksaan untuk pasien yang memang terdaftar pada dirinya.
+    const email = session.user.email ?? "";
+    const doctorName = doctorNameByEmail[email];
+
+    if (!doctorName || selectedBooking.dokter !== doctorName) {
+      return NextResponse.json(
+        {
+          error: "Forbidden",
+          message: "Anda tidak berwenang memproses antrean pasien dokter lain.",
+        },
+        { status: 403 },
       );
     }
 

@@ -9,6 +9,9 @@ import {
   user,
 } from "@/db/schema";
 
+// NOTE: skema di bawah ini dikelola manual (bukan lewat drizzle-kit migration) —
+// lihat catatan technical debt di drizzle.config.ts untuk detail risiko drift
+// dengan db/schema.ts.
 let initialized = false;
 let staffSeedPromise: Promise<void> | null = null;
 
@@ -143,6 +146,9 @@ export function ensureDatabase() {
   addColumnIfMissing("user", "phoneNumber", "TEXT");
   addColumnIfMissing("user", "nik", "TEXT");
   addColumnIfMissing("user", "address", "TEXT");
+  addColumnIfMissing("user", "bpjsNumber", "TEXT");
+  addColumnIfMissing("user", "bpjsActive", "INTEGER NOT NULL DEFAULT 0");
+  addColumnIfMissing("user", "bpjsVerifiedAt", "INTEGER");
   addColumnIfMissing("account", "expiresAt", "INTEGER");
   addColumnIfMissing("kamar_vk_rawat", "tipe_masuk", "TEXT");
   migratePendaftaranSchema();
@@ -165,12 +171,20 @@ export function ensureDatabase() {
     WHERE status = 'Terbatas';
   `);
   seedOperationalData();
-  staffSeedPromise ??= seedStaffAccounts();
+  if (shouldSeedDemoAccounts()) staffSeedPromise ??= seedStaffAccounts();
   initialized = true;
+}
+
+function shouldSeedDemoAccounts() {
+  return (
+    process.env.NODE_ENV !== "production" ||
+    process.env.SEED_DEMO_ACCOUNTS === "true"
+  );
 }
 
 export async function ensureStaffAccountsSeeded() {
   ensureDatabase();
+  if (!shouldSeedDemoAccounts()) return;
   if (!staffSeedPromise) staffSeedPromise = seedStaffAccounts();
   await staffSeedPromise;
 }
@@ -275,16 +289,23 @@ function seedOperationalData() {
       .run();
   }
 
-  const insertWardRoom = sqlite.prepare(`
-    INSERT OR REPLACE INTO kamar_vk_rawat (
+  // PENTING: jangan DELETE+reinsert kamar di sini. ensureDatabase() bisa berjalan
+  // ulang kapan saja modul ini di-reinit (mis. dev server reload), dan jika kamar
+  // di-wipe + direset ke "Tersedia" setiap kali, status okupansi pasien yang
+  // sedang dirawat (termasuk log aktivitasnya) hilang begitu saja — padahal
+  // status kamar seharusnya hanya berubah lewat aksi eksplisit perawat/staf
+  // (PATCH /api/kamar) atau alur darurat/rujukan. ON CONFLICT DO NOTHING membuat
+  // seeding ini idempotent: kamar yang sudah ada (apa pun statusnya) tidak disentuh,
+  // hanya kamar yang belum ada di tabel yang diisi dengan default "Tersedia".
+  const insertWardRoomIfMissing = sqlite.prepare(`
+    INSERT INTO kamar_vk_rawat (
       id_kamar, jenis_kamar, status, id_pasien, tipe_masuk
     ) VALUES (
       @idKamar, @jenisKamar, @status, NULL, NULL
-    );
+    )
+    ON CONFLICT(id_kamar) DO NOTHING;
   `);
-  sqlite.exec("DELETE FROM log_aktivitas_vk;");
-  sqlite.exec("DELETE FROM kamar_vk_rawat;");
-  rsuWardRooms.forEach((room) => insertWardRoom.run(room));
+  rsuWardRooms.forEach((room) => insertWardRoomIfMissing.run(room));
 
   const [{ value: rmeCount }] = db
     .select({ value: count() })
@@ -310,6 +331,12 @@ function seedOperationalData() {
 }
 
 async function seedStaffAccounts() {
+  console.warn(
+    "[db] Seeding akun staf demo dengan password default ('password123'). " +
+      "Ini HANYA untuk development/PoC — set SEED_DEMO_ACCOUNTS=false (default di " +
+      "production) untuk menonaktifkan seeding ini di environment nyata.",
+  );
+
   const staffAccounts = [
     {
       id: "staff-dr-coralin",

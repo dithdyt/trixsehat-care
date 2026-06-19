@@ -28,6 +28,11 @@ export const user = sqliteTable(
     phoneNumber: text("phoneNumber"),
     nik: text("nik"),
     address: text("address"),
+    bpjsNumber: text("bpjsNumber"),
+    bpjsActive: integer("bpjsActive", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    bpjsVerifiedAt: integer("bpjsVerifiedAt", { mode: "timestamp" }),
   },
   (table) => ({
     emailIdx: uniqueIndex("user_email_unique").on(table.email),

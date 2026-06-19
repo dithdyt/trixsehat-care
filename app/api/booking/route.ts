@@ -18,6 +18,7 @@ type BookingBody = {
 };
 
 const ACTIVE_STATUSES = ["MENUNGGU", "DIPANGGIL"] as const;
+const BOOKING_STATUSES = ["MENUNGGU", "DIPANGGIL", "SELESAI", "BATAL"] as const;
 const DEFAULT_POLIKLINIK = "Poliklinik Kebidanan & Kandungan (Obgyn)";
 const DEFAULT_DOKTER = "dr. Coralin Santoso, Sp.OG";
 const doctorNameByEmail: Record<string, string> = {
@@ -180,9 +181,9 @@ export async function POST(request: Request) {
   const dokter = body.dokter?.trim() || DEFAULT_DOKTER;
   const keluhan = body.keluhan?.trim() || null;
 
-  if (!nik || nik.length < 8) {
+  if (!nik || !/^\d{16}$/.test(nik)) {
     return NextResponse.json(
-      { error: "ValidationError", message: "NIK minimal 8 karakter." },
+      { error: "ValidationError", message: "NIK harus tepat 16 digit angka." },
       { status: 400 },
     );
   }
@@ -212,6 +213,11 @@ export async function POST(request: Request) {
     }
   }
 
+  // KNOWN LIMITATION (MVP/PoC): count-then-insert ini aman selama berjalan dalam
+  // satu proses Node dengan better-sqlite3 (synchronous, tidak ada `await` di antara
+  // count dan insert). Sebelum deploy multi-instance/serverless, tambahkan unique
+  // index pada (tglKunjungan, nomorAntrean) atau transaksi dengan locking eksplisit
+  // — lihat catatan di db/index.ts.
   const [{ value: queueCount }] = db
     .select({ value: count() })
     .from(pendaftaran)
@@ -247,18 +253,113 @@ export async function PATCH(request: Request) {
   ensureDatabase();
 
   const session = await getRequestSession(request);
-  if (!session?.user) {
-    return NextResponse.json(
-      { error: "Unauthorized", message: "Silakan login untuk membatalkan janji." },
-      { status: 401 },
-    );
-  }
-
   const body = (await request.json().catch(() => ({}))) as {
     id?: string;
     status?: "MENUNGGU" | "DIPANGGIL" | "SELESAI" | "BATAL";
     alasanBatal?: string;
+    guestIdDaftar?: string;
   };
+
+  if (!session?.user) {
+    // Guest menutup notifikasi "janji temu dibatalkan dokter" (arsipkan ke SELESAI).
+    // Tanpa cabang ini, request dari acknowledgeCancellationNotice() selalu 401
+    // karena tidak membawa guestIdDaftar.
+    if (body.id && body.status === "SELESAI") {
+      const archivedGuestBooking = db.transaction((tx) => {
+        const guestBooking = tx
+          .select()
+          .from(pendaftaran)
+          .where(eq(pendaftaran.id, body.id!))
+          .limit(1)
+          .get();
+
+        const isUnclaimedGuestBooking =
+          !guestBooking?.userId || guestBooking.userId.startsWith("guest-");
+
+        if (!guestBooking || !isUnclaimedGuestBooking || guestBooking.status !== "BATAL") {
+          return null;
+        }
+
+        tx.update(pendaftaran)
+          .set({ status: "SELESAI" })
+          .where(eq(pendaftaran.id, guestBooking.id))
+          .run();
+
+        return { ...guestBooking, status: "SELESAI" as const };
+      });
+
+      if (!archivedGuestBooking) {
+        return NextResponse.json(
+          { error: "NotFound", message: "Data pembatalan tidak ditemukan." },
+          { status: 404 },
+        );
+      }
+
+      insertNotification(
+        { id: archivedGuestBooking.id, userId: archivedGuestBooking.userId },
+        `Pemberitahuan pembatalan ${archivedGuestBooking.nomorAntrean} telah ditutup.`,
+      );
+
+      return NextResponse.json({ data: archivedGuestBooking });
+    }
+
+    const guestIdDaftar = body.guestIdDaftar?.trim();
+
+    if (!guestIdDaftar) {
+      return NextResponse.json(
+        { error: "Unauthorized", message: "Silakan login untuk membatalkan janji." },
+        { status: 401 },
+      );
+    }
+
+    const cancelledGuestBooking = db.transaction((tx) => {
+      const guestBooking = tx
+        .select()
+        .from(pendaftaran)
+        .where(eq(pendaftaran.id, guestIdDaftar))
+        .limit(1)
+        .get();
+
+      const isUnclaimedGuestBooking =
+        !guestBooking?.userId || guestBooking.userId.startsWith("guest-");
+      const isActive =
+        guestBooking &&
+        ACTIVE_STATUSES.includes(
+          guestBooking.status as (typeof ACTIVE_STATUSES)[number],
+        );
+
+      if (!guestBooking || !isUnclaimedGuestBooking || !isActive) return null;
+
+      tx.update(pendaftaran)
+        .set({ status: "BATAL", alasanBatal: "Dibatalkan oleh pasien." })
+        .where(eq(pendaftaran.id, guestBooking.id))
+        .run();
+
+      return { ...guestBooking, status: "BATAL" as const, alasanBatal: "Dibatalkan oleh pasien." };
+    });
+
+    if (!cancelledGuestBooking) {
+      return NextResponse.json(
+        { error: "NotFound", message: "Tidak ada antrean aktif untuk dibatalkan." },
+        { status: 404 },
+      );
+    }
+
+    insertNotification(
+      { id: cancelledGuestBooking.id, userId: cancelledGuestBooking.userId },
+      `Antrean ${cancelledGuestBooking.nomorAntrean} berhasil dibatalkan.`,
+    );
+
+    return NextResponse.json({ data: cancelledGuestBooking });
+  }
+
+  if (body.status && !BOOKING_STATUSES.includes(body.status)) {
+    return NextResponse.json(
+      { error: "ValidationError", message: "Status antrean tidak valid." },
+      { status: 400 },
+    );
+  }
+
   const role = (session.user as { role?: string }).role;
 
   if (
@@ -266,6 +367,33 @@ export async function PATCH(request: Request) {
     body.id &&
     body.status
   ) {
+    const email = session.user.email ?? "";
+    // Perawat VK (siti.vk@trixsehat.com) dan super_admin/admin perlu mengubah
+    // antrean lintas dokter (mis. menyelesaikan antrean darurat), jadi dikecualikan
+    // dari pengecekan kepemilikan. Dokter biasa hanya boleh mengubah antrean miliknya.
+    const isCrossDoctorExempt =
+      role === "super_admin" || role === "admin" || email === "siti.vk@trixsehat.com";
+
+    if (role === "medis" && !isCrossDoctorExempt) {
+      const targetBooking = db
+        .select({ dokter: pendaftaran.dokter })
+        .from(pendaftaran)
+        .where(eq(pendaftaran.id, body.id))
+        .limit(1)
+        .get();
+      const doctorName = doctorNameByEmail[email];
+
+      if (!targetBooking || !doctorName || targetBooking.dokter !== doctorName) {
+        return NextResponse.json(
+          {
+            error: "Forbidden",
+            message: "Anda tidak berwenang mengubah antrean pasien dokter lain.",
+          },
+          { status: 403 },
+        );
+      }
+    }
+
     const nextStatus = body.status;
     const updatePayload =
       nextStatus === "BATAL"

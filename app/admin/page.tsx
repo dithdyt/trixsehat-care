@@ -41,6 +41,7 @@ type PharmacyRecord = {
   userId: string;
   namaPasien: string | null;
   nikPasien: string | null;
+  bpjsActive: boolean;
   keluhanUtama: string;
   diagnosaIcd10: string;
   tindakanMedis: string;
@@ -60,6 +61,7 @@ type BillingRecord = {
   idPendaftaran: string | null;
   namaPasien: string | null;
   nikPasien: string | null;
+  bpjsActive: boolean;
   nomorAntrean: string | null;
   poliklinik: string | null;
   dokter: string | null;
@@ -433,6 +435,11 @@ export default function AdminDashboardPage() {
                         </p>
                         <h2 className="mt-1 font-sans text-lg font-bold">
                           {record.namaPasien ?? "Pasien TrixSehat"}
+                          {record.bpjsActive && (
+                            <span className="ml-2 text-sm font-semibold text-[#0F766E]">
+                              (BPJS)
+                            </span>
+                          )}
                         </h2>
                         <p className="mt-1 text-xs text-slate-500">
                           NIK {record.nikPasien ?? "-"} | {formatTime(record.createdAt)}
@@ -515,6 +522,11 @@ export default function AdminDashboardPage() {
                           </p>
                           <h2 className="mt-1 font-sans text-lg font-bold">
                             {record.namaPasien ?? "Pasien TrixSehat"}
+                            {record.bpjsActive && (
+                              <span className="ml-2 text-sm font-semibold text-[#0F766E]">
+                                (BPJS)
+                              </span>
+                            )}
                           </h2>
                           <p className="mt-1 text-xs text-slate-500">
                             {record.poliklinik ?? "Kunjungan pasien"} | {record.dokter ?? "Dokter TrixSehat"}
@@ -627,6 +639,11 @@ export default function AdminDashboardPage() {
                       <div>
                         <p className="font-semibold">
                           {record.namaPasien ?? "Pasien TrixSehat"}
+                          {record.bpjsActive && (
+                            <span className="ml-2 text-sm font-semibold text-[#0F766E]">
+                              (BPJS)
+                            </span>
+                          )}
                         </p>
                         <p className="mt-1 text-xs text-slate-500">
                           {record.poliklinik ?? record.deskripsi} | Lunas{" "}

@@ -8,8 +8,50 @@ import { getRequestSession } from "@/lib/session";
 
 export const runtime = "nodejs";
 
+const RATE_LIMIT_WINDOW_MS = 60_000;
+const RATE_LIMIT_MAX_REQUESTS = 3;
+// Rate limiter in-memory per-proses — cukup untuk MVP single-instance.
+// Sebelum deploy multi-instance/serverless, ganti dengan store terpusat
+// (mis. Redis) karena Map ini tidak dibagi antar proses/instance.
+const emergencyRequestLog = new Map<string, number[]>();
+
+function getClientIp(request: Request) {
+  return (
+    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
+    request.headers.get("x-real-ip") ||
+    "unknown"
+  );
+}
+
+function isRateLimited(ip: string) {
+  const now = Date.now();
+  const recentRequests = (emergencyRequestLog.get(ip) ?? []).filter(
+    (timestamp) => now - timestamp < RATE_LIMIT_WINDOW_MS,
+  );
+
+  if (recentRequests.length >= RATE_LIMIT_MAX_REQUESTS) {
+    emergencyRequestLog.set(ip, recentRequests);
+    return true;
+  }
+
+  recentRequests.push(now);
+  emergencyRequestLog.set(ip, recentRequests);
+  return false;
+}
+
 export async function POST(request: Request) {
   ensureDatabase();
+
+  if (isRateLimited(getClientIp(request))) {
+    return NextResponse.json(
+      {
+        error: "TooManyRequests",
+        message:
+          "Terlalu banyak permintaan darurat dari perangkat ini. Jika ini kondisi darurat nyata, segera hubungi RS langsung.",
+      },
+      { status: 429 },
+    );
+  }
 
   const session = await getRequestSession(request);
   const body = (await request.json().catch(() => ({}))) as {
