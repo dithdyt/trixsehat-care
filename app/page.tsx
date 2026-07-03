@@ -11,12 +11,14 @@ import {
   CheckCircle2,
   ChevronRight,
   ClipboardList,
+  Download,
   HeartPulse,
   IdCard,
   KeyRound,
   LockKeyhole,
   Mail,
   MapPin,
+  MessageCircle,
   Pencil,
   Phone,
   ReceiptText,
@@ -73,6 +75,7 @@ type ResepApi = {
           nama: string;
           dosis: string;
           harga: number;
+          qty?: number;
         }>
       | null;
   }>;
@@ -86,11 +89,26 @@ type BookingApi = {
 type BillingApi = {
   data: Array<{
     id: string;
+    userId?: string;
+    idRme?: string | null;
+    idPendaftaran?: string | null;
     deskripsi: string;
     biayaJasaDokter: number;
     biayaObat: number;
     total: number;
+    potonganAsuransi: number;
+    grandTotal: number;
+    resepObat:
+      | Array<{
+          nama: string;
+          dosis: string;
+          harga: number;
+          qty?: number;
+        }>
+      | null;
     status: "TERTUNDA" | "LUNAS";
+    tglLunas?: string | number | Date | null;
+    createdAt?: string | number | Date;
   }>;
 };
 
@@ -124,10 +142,24 @@ type BookingRecord = {
   tglKunjungan: string;
   poliklinik: string;
   dokter: string;
+  jamKunjungan: string;
+  metodePembayaran: "Mandiri" | "Asuransi";
+  noAsuransi: string | null;
   keluhan: string | null;
   alasanBatal: string | null;
   status: "MENUNGGU" | "DIPANGGIL" | "SELESAI" | "BATAL";
   userId: string | null;
+};
+
+type JadwalApi = {
+  data: {
+    id: string;
+    dokterId: string;
+    jamMulai: string;
+    jamSelesai: string;
+    kuota: number;
+  } | null;
+  slots: string[];
 };
 
 const navItems: Array<{ id: ActiveTab; label: string }> = [
@@ -284,6 +316,26 @@ function prescriptionBadge(status: string) {
   return "secondary";
 }
 
+function queueStatusClass(status: BookingRecord["status"]) {
+  if (status === "DIPANGGIL") return "animate-pulse bg-emerald-500 text-white";
+  if (status === "MENUNGGU") return "bg-amber-50 text-amber-700";
+  if (status === "SELESAI") return "bg-emerald-50 text-emerald-700";
+  return "bg-rose-50 text-rose-700";
+}
+
+function addMinutesToTime(time: string, minutesToAdd: number) {
+  const [hour = 0, minute = 0] = time.split(":").map(Number);
+  const totalMinutes = hour * 60 + minute + minutesToAdd;
+  const nextHour = Math.floor(totalMinutes / 60) % 24;
+  const nextMinute = totalMinutes % 60;
+  return `${String(nextHour).padStart(2, "0")}:${String(nextMinute).padStart(2, "0")}`;
+}
+
+function getQueueOrder(nomorAntrean?: string | null) {
+  const number = Number(nomorAntrean?.match(/\d+/)?.[0] ?? 1);
+  return Number.isFinite(number) && number > 0 ? number : 1;
+}
+
 export default function PatientDashboardPage() {
   const router = useRouter();
   const [activeTab, setActiveTab] = useState<ActiveTab>("dashboard");
@@ -305,8 +357,13 @@ export default function PatientDashboardPage() {
   const [profileMessage, setProfileMessage] = useState("");
   const [passwordMessage, setPasswordMessage] = useState("");
   const [emergencyStatus, setEmergencyStatus] = useState("");
+  const [printInvoice, setPrintInvoice] = useState<
+    BillingApi["data"][number] | null
+  >(null);
   const [selectedClinic, setSelectedClinic] = useState("");
   const [selectedDoctor, setSelectedDoctor] = useState("");
+  const [paymentMethod, setPaymentMethod] =
+    useState<BookingRecord["metodePembayaran"]>("Mandiri");
   const [guestActiveBooking, setGuestActiveBooking] =
     useState<BookingRecord | null>(null);
   const session = useSession();
@@ -319,6 +376,8 @@ export default function PatientDashboardPage() {
         phoneNumber?: string | null;
         nik?: string | null;
         address?: string | null;
+        nomorBpjs?: string | null;
+        statusBpjs?: "Aktif" | "Non-Aktif" | null;
       })
     | undefined;
 
@@ -390,6 +449,15 @@ export default function PatientDashboardPage() {
     fetcher,
     { refreshInterval: isMember || guestIdDaftar ? 5000 : 0 },
   );
+  const { data: paidBilling } = useSWR<BillingApi>(
+    isMember
+      ? "/api/billing?status=LUNAS"
+      : guestIdDaftar
+        ? `/api/billing?status=LUNAS&id_daftar=${encodeURIComponent(guestIdDaftar)}`
+        : null,
+    fetcher,
+    { refreshInterval: isMember || guestIdDaftar ? 5000 : 0 },
+  );
   const { data: notifications, mutate: mutateNotifications } =
     useSWR<NotifikasiApi>(
       isMember
@@ -400,8 +468,27 @@ export default function PatientDashboardPage() {
       fetcher,
       { refreshInterval: isMember || guestIdDaftar ? 5000 : 0 },
   );
+  const { data: doctorSchedule } = useSWR<JadwalApi>(
+    selectedDoctor
+      ? `/api/jadwal?dokter=${encodeURIComponent(selectedDoctor)}`
+      : null,
+    fetcher,
+    { refreshInterval: selectedDoctor ? 10000 : 0 },
+  );
+  const activeBooking = isMember
+    ? bookingData?.active ?? null
+    : bookingData?.active ?? guestActiveBooking;
+  const bookingHistory = bookingData?.history ?? [];
+  const { data: activeDoctorSchedule } = useSWR<JadwalApi>(
+    activeBooking?.dokter
+      ? `/api/jadwal?dokter=${encodeURIComponent(activeBooking.dokter)}`
+      : null,
+    fetcher,
+    { refreshInterval: activeBooking ? 10000 : 0 },
+  );
 
   const doctorOptions = selectedClinic ? doctorsByClinic[selectedClinic] ?? [] : [];
+  const visitSlots = doctorSchedule?.slots ?? [];
   const isCompletedProfileValue = (value?: string | null) => {
     const normalized = value?.trim();
     return Boolean(normalized && normalized !== "Belum dilengkapi");
@@ -434,10 +521,6 @@ export default function PatientDashboardPage() {
       })),
     ) ?? [];
 
-  const activeBooking = isMember
-    ? bookingData?.active ?? null
-    : bookingData?.active ?? guestActiveBooking;
-  const bookingHistory = bookingData?.history ?? [];
   const today = new Date().toISOString().slice(0, 10);
   const heroActiveBooking =
     activeBooking && ["MENUNGGU", "DIPANGGIL"].includes(activeBooking.status)
@@ -456,15 +539,56 @@ export default function PatientDashboardPage() {
     0,
   );
   const invoiceRows =
-    billing?.data.flatMap((item) => [
-      ["Jasa dokter", item.biayaJasaDokter] as [string, number],
-      ["Obat & vitamin", item.biayaObat] as [string, number],
-    ]) ?? [];
+    billing?.data.flatMap((item) => {
+      const rows: Array<[string, number]> = [
+        ["Jasa dokter", item.biayaJasaDokter],
+        ["Administrasi", 50000],
+      ];
+      (item.resepObat ?? []).forEach((medicine) => {
+        const qty = Math.max(Number(medicine.qty ?? 1), 1);
+        rows.push([
+          `${medicine.nama} @ ${formatCurrency(medicine.harga)} x ${qty}`,
+          medicine.harga * qty,
+        ]);
+      });
+      if (item.potonganAsuransi > 0) {
+        rows.push(["Covered by BPJS", -item.potonganAsuransi]);
+      }
+      return rows;
+    }) ?? [];
   const invoiceTotal = invoiceRows.reduce((sum, [, price]) => sum + price, 0);
+  const paidTransactions = paidBilling?.data ?? [];
+  const printInvoiceRows = printInvoice
+    ? [
+        ["Jasa Dokter", printInvoice.biayaJasaDokter] as [string, number],
+        ["Administrasi", 50000] as [string, number],
+        ...(printInvoice.resepObat ?? []).map((medicine) => {
+          const qty = Math.max(Number(medicine.qty ?? 1), 1);
+          return [
+            `${medicine.nama} @ ${formatCurrency(medicine.harga)} x ${qty}`,
+            medicine.harga * qty,
+          ] as [string, number];
+        }),
+        ["Covered by BPJS", -printInvoice.potonganAsuransi] as [
+          string,
+          number,
+        ],
+      ]
+        .filter(([, value]) => value !== 0)
+    : [];
   const hasGuestScope = Boolean(guestIdDaftar);
   const canViewPersonalFinance = isMember || hasGuestScope;
   const hasActiveBooking = Boolean(activeBooking);
+  const hasActiveBpjs = Boolean(
+    userProfile?.nomorBpjs && userProfile.statusBpjs === "Aktif",
+  );
   const unreadNotifications = notifications?.unreadCount ?? 0;
+  const activeEstimatedTime = activeBooking
+    ? addMinutesToTime(
+        activeDoctorSchedule?.data?.jamMulai ?? activeBooking.jamKunjungan ?? "09:00",
+        getQueueOrder(activeBooking.nomorAntrean) * 15,
+      )
+    : null;
 
   useEffect(() => {
     if (!toast) return;
@@ -473,8 +597,19 @@ export default function PatientDashboardPage() {
     return () => window.clearTimeout(timeout);
   }, [toast]);
 
+  useEffect(() => {
+    const cleanupPrintState = () => setPrintInvoice(null);
+    window.addEventListener("afterprint", cleanupPrintState);
+    return () => window.removeEventListener("afterprint", cleanupPrintState);
+  }, []);
+
   function showToast(type: "success" | "error", message: string) {
     setToast({ type, message });
+  }
+
+  function printPatientInvoice(invoice: BillingApi["data"][number]) {
+    setPrintInvoice(invoice);
+    window.setTimeout(() => window.print(), 100);
   }
 
   function dismissCancellationNotice(id: string) {
@@ -535,6 +670,9 @@ export default function PatientDashboardPage() {
         tglKunjungan: form.get("tglKunjungan"),
         poliklinik: form.get("poliklinik"),
         dokter: form.get("dokter"),
+        jamKunjungan: form.get("jamKunjungan"),
+        metodePembayaran: form.get("metodePembayaran"),
+        noAsuransi: form.get("noAsuransi"),
         keluhan: form.get("keluhan"),
       }),
     });
@@ -607,6 +745,10 @@ export default function PatientDashboardPage() {
     setProfileMessage("Menyimpan data profil...");
 
     const form = new FormData(event.currentTarget);
+    const nomorBpjs = String(form.get("nomorBpjs") ?? "").replace(/\D/g, "");
+    const statusBpjs = nomorBpjs.length >= 11 && nomorBpjs.length <= 13
+      ? "Aktif"
+      : "Non-Aktif";
     const response = await fetch("/api/profile", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -615,6 +757,8 @@ export default function PatientDashboardPage() {
         phoneNumber: form.get("phoneNumber"),
         nik: form.get("nik"),
         address: form.get("address"),
+        nomorBpjs,
+        statusBpjs,
       }),
     });
     const payload = await response.json().catch(() => ({}));
@@ -753,6 +897,65 @@ export default function PatientDashboardPage() {
 
   return (
     <main className="relative min-h-screen overflow-hidden bg-[#F8FAFC] text-slate-950">
+      {printInvoice && (
+        <div className="hidden print:block fixed inset-0 bg-white p-6 text-black">
+          <div className="mx-auto w-[320px] border border-slate-300 p-5 font-sans">
+            <div className="text-center">
+              <img
+                src="/trixsehat-icon.png"
+                alt="TrixSehat Logo"
+                className="mx-auto h-10 w-10 object-contain"
+              />
+              <p className="mt-2 text-lg font-bold">RSU TrixSehat</p>
+              <p className="text-[11px] text-slate-600">
+                Struk Pembayaran Pasien
+              </p>
+            </div>
+            <div className="my-4 border-t border-dashed border-slate-300" />
+            <div className="space-y-1 text-xs">
+              <div className="flex justify-between gap-3">
+                <span>ID Transaksi</span>
+                <span className="font-mono font-semibold">
+                  {printInvoice.id.slice(0, 12).toUpperCase()}
+                </span>
+              </div>
+              <div className="flex justify-between gap-3">
+                <span>Nama Pasien</span>
+                <span className="text-right font-semibold">{displayName}</span>
+              </div>
+              <div className="flex justify-between gap-3">
+                <span>Status</span>
+                <span className="font-mono font-bold text-emerald-700">
+                  LUNAS
+                </span>
+              </div>
+            </div>
+            <div className="my-4 border-t border-dashed border-slate-300" />
+            <div className="space-y-2 text-xs">
+              {printInvoiceRows.map(([label, value]) => (
+                <div key={label} className="flex justify-between gap-3">
+                  <span>{label}</span>
+                  <span className="font-mono font-semibold">
+                    {formatCurrency(value)}
+                  </span>
+                </div>
+              ))}
+            </div>
+            <div className="my-4 border-t border-dashed border-slate-300" />
+            <div className="flex items-center justify-between text-sm font-bold">
+              <span>Total</span>
+              <span className="font-mono">
+                {formatCurrency(printInvoice.grandTotal)}
+              </span>
+            </div>
+            <p className="mt-5 text-center text-[11px] leading-5 text-slate-600">
+              Terima kasih telah mempercayakan kesehatan Anda pada RSU
+              TrixSehat.
+            </p>
+          </div>
+        </div>
+      )}
+      <div className={cn(printInvoice && "print:hidden")}>
       <div className="pointer-events-none absolute right-[-8rem] top-[-7rem] h-80 w-80 animate-pulse rounded-full bg-gradient-to-br from-[#14B8A6] to-[#99F6E4] opacity-20 blur-3xl" />
       <div className="pointer-events-none absolute bottom-[-9rem] left-[-8rem] h-96 w-96 animate-pulse rounded-full bg-gradient-to-tr from-[#10B981] to-[#D1FAE5] opacity-20 blur-3xl [animation-delay:700ms]" />
       <BotanicalLineArt className="absolute left-2 top-36" />
@@ -916,9 +1119,17 @@ export default function PatientDashboardPage() {
                 <CardContent className={cn("p-8 md:p-10", clinicContent)}>
                   <div className="max-w-4xl">
                     <h1 className="font-sans text-3xl font-bold tracking-normal text-slate-950 md:text-4xl">
-                      Selamat pagi, {displayName}{" "}
+                      Selamat pagi,{" "}
+                      <span className="font-extrabold text-teal-950">
+                        {displayName}
+                      </span>{" "}
                       <Sparkles className="inline h-8 w-8 text-[#06B6D4]" />
                     </h1>
+                    {hasActiveBpjs && (
+                      <Badge className="mt-4 rounded-full bg-emerald-50 px-3 py-1 text-emerald-700">
+                        Member BPJS Kesehatan Aktif
+                      </Badge>
+                    )}
                     <p className="mt-4 max-w-3xl text-lg leading-8 text-slate-700">
                       {heroActiveBooking ? (
                         <>
@@ -952,6 +1163,48 @@ export default function PatientDashboardPage() {
                   </div>
                 </CardContent>
               </Card>
+
+              <section className="animate-card rounded-[1.7rem] border border-white/70 bg-white/50 p-5 shadow-[0_18px_45px_rgba(15,23,42,0.05)] backdrop-blur">
+                <div className="mb-4 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+                  <div>
+                    <p className="font-sans text-lg font-bold text-teal-950">
+                      Pusat Bantuan TrixSehat
+                    </p>
+                    <p className="text-sm text-slate-500">
+                      Informasi cepat untuk bantuan layanan dan kondisi darurat.
+                    </p>
+                  </div>
+                </div>
+                <div className="grid gap-4 md:grid-cols-3">
+                  {[
+                    [Phone, "Darurat 24 Jam", "021-2867-4567", "text-rose-600"],
+                    [MessageCircle, "Customer Service", "021-2867-1144", "text-teal-900"],
+                    [MapPin, "Lokasi Unit", "Jl. Alternatif Cipulir, Jakarta Selatan", "text-teal-900"],
+                  ].map(([Icon, label, value, color]) => (
+                    <div
+                      key={label as string}
+                      className="flex items-center gap-4 rounded-2xl border border-white/80 bg-white/60 p-4"
+                    >
+                      <div
+                        className={cn(
+                          "flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-slate-50",
+                          color as string,
+                        )}
+                      >
+                        <Icon className="h-5 w-5" />
+                      </div>
+                      <div>
+                        <p className="font-sans text-sm font-semibold text-teal-950">
+                          {label as string}
+                        </p>
+                        <p className={cn("mt-1 text-sm font-bold", color as string)}>
+                          {value as string}
+                        </p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
 
               <div className="grid gap-6 lg:grid-cols-[2.1fr_1fr]">
                 <Card
@@ -1164,7 +1417,7 @@ export default function PatientDashboardPage() {
                       <div className="grid gap-5 md:grid-cols-4">
                         {[
                           ["Nomor antrean", activeBooking.nomorAntrean],
-                          ["Estimasi dilayani", "09:40"],
+                          ["Estimasi dilayani", `${activeEstimatedTime ?? activeBooking.jamKunjungan} WIB`],
                           ["Lokasi", activeBooking.poliklinik],
                           ["Status", activeBooking.status],
                         ].map(([label, value]) => (
@@ -1173,9 +1426,22 @@ export default function PatientDashboardPage() {
                             className="rounded-2xl border bg-slate-50 p-5"
                           >
                             <p className="text-sm text-slate-500">{label}</p>
-                            <p className="mt-2 font-mono text-2xl font-bold text-slate-950">
-                              {value}
-                            </p>
+                            {label === "Status" ? (
+                              <Badge
+                                className={cn(
+                                  "mt-2 rounded-full font-mono",
+                                  queueStatusClass(
+                                    value as BookingRecord["status"],
+                                  ),
+                                )}
+                              >
+                                {value}
+                              </Badge>
+                            ) : (
+                              <p className="mt-2 font-mono text-2xl font-bold text-slate-950">
+                                {value}
+                              </p>
+                            )}
                           </div>
                         ))}
                       </div>
@@ -1189,6 +1455,12 @@ export default function PatientDashboardPage() {
                             Keluhan: {activeBooking.keluhan}
                           </p>
                         )}
+                        <p className="mt-2 text-sm text-slate-600">
+                          Pembayaran: {activeBooking.metodePembayaran}
+                          {activeBooking.noAsuransi
+                            ? ` (${activeBooking.noAsuransi})`
+                            : ""}
+                        </p>
                       </div>
                       <Button
                         onClick={handleCancelBooking}
@@ -1279,7 +1551,7 @@ export default function PatientDashboardPage() {
                       <input
                         name="tglKunjungan"
                         type="date"
-                        defaultValue="2026-06-10"
+                        defaultValue={today}
                         className="h-11 w-full rounded-xl border bg-slate-50 px-3 font-mono outline-none ring-[#4D5D4E] focus:ring-2"
                       />
                     </label>
@@ -1330,6 +1602,61 @@ export default function PatientDashboardPage() {
                     </label>
                     <label className="space-y-2">
                       <span className="text-sm font-medium text-slate-600">
+                        Pilih Jam Kunjungan
+                      </span>
+                      <select
+                        name="jamKunjungan"
+                        required
+                        disabled={!selectedDoctor || visitSlots.length === 0}
+                        className="h-11 w-full rounded-xl border bg-slate-50 px-3 font-mono outline-none ring-[#14B8A6] focus:ring-2 disabled:text-slate-400"
+                      >
+                        <option value="">
+                          {selectedDoctor
+                            ? visitSlots.length > 0
+                              ? "-- Pilih Jam --"
+                              : "Dokter belum mengatur jadwal"
+                            : "Pilih dokter dahulu"}
+                        </option>
+                        {visitSlots.map((slot) => (
+                          <option key={slot} value={slot}>
+                            {slot}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="space-y-2">
+                      <span className="text-sm font-medium text-slate-600">
+                        Metode Pembayaran
+                      </span>
+                      <select
+                        name="metodePembayaran"
+                        value={paymentMethod}
+                        onChange={(event) =>
+                          setPaymentMethod(
+                            event.target.value as BookingRecord["metodePembayaran"],
+                          )
+                        }
+                        className="h-11 w-full rounded-xl border bg-slate-50 px-3 outline-none ring-[#14B8A6] focus:ring-2"
+                      >
+                        <option value="Mandiri">Mandiri</option>
+                        <option value="Asuransi">Asuransi Swasta</option>
+                      </select>
+                    </label>
+                    {paymentMethod === "Asuransi" && (
+                      <label className="space-y-2">
+                        <span className="text-sm font-medium text-slate-600">
+                          Nomor Polis
+                        </span>
+                        <input
+                          name="noAsuransi"
+                          required
+                          placeholder="Nomor BPJS / polis asuransi"
+                          className="h-11 w-full rounded-xl border bg-slate-50 px-3 font-mono outline-none ring-[#14B8A6] focus:ring-2"
+                        />
+                      </label>
+                    )}
+                    <label className="space-y-2">
+                      <span className="text-sm font-medium text-slate-600">
                         Keluhan Singkat
                       </span>
                       <input
@@ -1376,10 +1703,10 @@ export default function PatientDashboardPage() {
                   <Card className="rounded-[1.7rem] bg-white">
                     <CardHeader>
                       <CardTitle className="font-sans font-bold">
-                        Resep Saya
+                        Resep Aktif
                       </CardTitle>
                       <CardDescription>
-                        Data diambil dari tabel rekam_medis_elektronik.
+                        Resep yang masih diproses atau siap diambil di apotek.
                       </CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-4">
@@ -1422,7 +1749,7 @@ export default function PatientDashboardPage() {
                   <Card className="rounded-[1.7rem] bg-white">
                     <CardHeader>
                       <CardTitle className="font-sans font-bold">
-                        Kuitansi
+                        Tagihan Tertunda
                       </CardTitle>
                       <CardDescription>
                         Total sementara kunjungan hari ini.
@@ -1449,6 +1776,59 @@ export default function PatientDashboardPage() {
                           {formatCurrency(invoiceTotal)}
                         </p>
                       </div>
+                    </CardContent>
+                  </Card>
+                  <Card className="rounded-[1.7rem] bg-white lg:col-span-2">
+                    <CardHeader>
+                      <CardTitle className="font-sans font-bold">
+                        Riwayat Transaksi
+                      </CardTitle>
+                      <CardDescription>
+                        Invoice yang sudah lunas tetap tersimpan dan dapat
+                        dicetak ulang.
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-4">
+                      {paidTransactions.length === 0 ? (
+                        <div className="rounded-2xl border border-dashed bg-slate-50 p-6 text-center text-slate-600">
+                          Belum ada riwayat transaksi lunas.
+                        </div>
+                      ) : (
+                        <div className="space-y-4">
+                          {paidTransactions.map((record) => (
+                            <div
+                              key={record.id}
+                              className="flex flex-col gap-4 rounded-2xl border bg-slate-50 p-5 md:flex-row md:items-center md:justify-between"
+                            >
+                              <div>
+                                <p className="font-mono text-xs font-semibold text-[#0F766E]">
+                                  {record.id.slice(0, 12).toUpperCase()}
+                                </p>
+                                <p className="mt-1 font-semibold">
+                                  {record.deskripsi}
+                                </p>
+                                <div className="mt-2 flex flex-wrap items-center gap-2">
+                                  <Badge className="rounded-full bg-emerald-50 text-emerald-700">
+                                    LUNAS
+                                  </Badge>
+                                  <span className="font-mono text-sm font-bold text-slate-900">
+                                    {formatCurrency(record.grandTotal)}
+                                  </span>
+                                </div>
+                              </div>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                onClick={() => printPatientInvoice(record)}
+                                className="rounded-full border-teal-100 bg-white text-[#0F766E] hover:bg-teal-50"
+                              >
+                                <Download className="h-4 w-4" />
+                                Cetak Struk (PDF)
+                              </Button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </CardContent>
                   </Card>
                   <Card className="rounded-[1.7rem] bg-white lg:col-span-2">
@@ -1620,6 +2000,7 @@ export default function PatientDashboardPage() {
                         [Phone, "Nomor Handphone", userProfile?.phoneNumber ?? "Belum dilengkapi"],
                         [IdCard, "NIK", userProfile?.nik ?? activeBooking?.nik ?? "Belum dilengkapi"],
                         [MapPin, "Alamat Rumah", userProfile?.address ?? "Belum dilengkapi"],
+                        [IdCard, "Nomor Kartu BPJS", userProfile?.nomorBpjs ?? "Belum dilengkapi"],
                       ].map(([Icon, label, value]) => (
                         <div
                           key={label as string}
@@ -1638,6 +2019,26 @@ export default function PatientDashboardPage() {
                           </div>
                         </div>
                       ))}
+                      <div className="flex items-center justify-between gap-4 rounded-2xl border bg-white/75 p-4">
+                        <div>
+                          <p className="text-xs font-medium uppercase text-slate-500">
+                            Status Kepesertaan BPJS
+                          </p>
+                          <p className="mt-1 text-sm text-slate-600">
+                            Data profil pasien untuk validasi metode bayar BPJS.
+                          </p>
+                        </div>
+                        <Badge
+                          className={cn(
+                            "rounded-full",
+                            userProfile?.statusBpjs === "Aktif"
+                              ? "bg-emerald-50 text-emerald-700"
+                              : "bg-slate-100 text-slate-600",
+                          )}
+                        >
+                          {userProfile?.statusBpjs ?? "Non-Aktif"}
+                        </Badge>
+                      </div>
                     </CardContent>
                   </Card>
 
@@ -1737,6 +2138,7 @@ export default function PatientDashboardPage() {
           defaultPhoneNumber={userProfile?.phoneNumber ?? ""}
           defaultNik={userProfile?.nik ?? activeBooking?.nik ?? ""}
           defaultAddress={userProfile?.address ?? ""}
+          defaultNomorBpjs={userProfile?.nomorBpjs ?? ""}
           message={profileMessage}
           onClose={() => setShowProfileModal(false)}
           onSubmit={handleProfileSubmit}
@@ -1779,6 +2181,7 @@ export default function PatientDashboardPage() {
       )}
 
       {toast && <AppToast toast={toast} />}
+      </div>
     </main>
   );
 }
@@ -1846,6 +2249,11 @@ function BookingTicketModal({
   ticket: BookingRecord;
   onClose: () => void;
 }) {
+  const estimatedTime = addMinutesToTime(
+    ticket.jamKunjungan ?? "09:00",
+    getQueueOrder(ticket.nomorAntrean) * 15,
+  );
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 px-4 backdrop-blur-sm">
       <Card className="animate-card w-full max-w-lg rounded-2xl border-[#E2E8F0] bg-white shadow-xl">
@@ -1872,7 +2280,7 @@ function BookingTicketModal({
           <div className="grid gap-3 text-sm">
             {[
               ["Dokter spesialis", ticket.dokter],
-              ["Estimasi pelayanan", "09:40 WIB"],
+              ["Estimasi pelayanan", `${estimatedTime} WIB`],
               ["Lokasi poli", ticket.poliklinik],
             ].map(([label, value]) => (
               <div
@@ -2161,6 +2569,7 @@ function ProfileModal({
   defaultPhoneNumber,
   defaultNik,
   defaultAddress,
+  defaultNomorBpjs,
   message,
   onClose,
   onSubmit,
@@ -2169,6 +2578,7 @@ function ProfileModal({
   defaultPhoneNumber: string;
   defaultNik: string;
   defaultAddress: string;
+  defaultNomorBpjs: string;
   message: string;
   onClose: () => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
@@ -2254,6 +2664,29 @@ function ProfileModal({
                 placeholder="Alamat lengkap pasien"
                 className="w-full rounded-xl border bg-slate-50 px-3 py-3 outline-none ring-[#14B8A6] focus:ring-2"
               />
+            </label>
+            <label className="block space-y-2">
+              <span className="text-sm font-medium text-slate-600">
+                Nomor Kartu BPJS
+              </span>
+              <input
+                name="nomorBpjs"
+                defaultValue={defaultNomorBpjs}
+                inputMode="numeric"
+                minLength={11}
+                maxLength={13}
+                placeholder="11-13 digit, kosongkan jika belum punya"
+                onInput={(event) => {
+                  event.currentTarget.value = event.currentTarget.value
+                    .replace(/\D/g, "")
+                    .slice(0, 13);
+                }}
+                className="h-11 w-full rounded-xl border bg-slate-50 px-3 font-mono outline-none ring-[#14B8A6] focus:ring-2"
+              />
+              <span className="block text-xs text-slate-400">
+                Jika terisi 11-13 digit, status BPJS otomatis menjadi Aktif.
+                Jika dikosongkan, status menjadi Non-Aktif.
+              </span>
             </label>
             {message && (
               <p className="rounded-2xl bg-slate-50 p-3 text-sm font-medium text-slate-600">

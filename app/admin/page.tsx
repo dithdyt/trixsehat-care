@@ -63,10 +63,15 @@ type BillingRecord = {
   nomorAntrean: string | null;
   poliklinik: string | null;
   dokter: string | null;
+  metodePembayaran: string | null;
+  noAsuransi: string | null;
   deskripsi: string;
   biayaJasaDokter: number;
   biayaObat: number;
   total: number;
+  potonganAsuransi: number;
+  grandTotal: number;
+  resepObat: PrescriptionItem[] | null;
   status: "TERTUNDA" | "LUNAS";
   tglLunas: string | number | Date | null;
   createdAt: string | number | Date;
@@ -150,6 +155,7 @@ export default function AdminDashboardPage() {
   const [pharmacyMessage, setPharmacyMessage] = useState("");
   const [billingMessage, setBillingMessage] = useState("");
   const [revenuePeriod, setRevenuePeriod] = useState<RevenuePeriod>("today");
+  const [printInvoice, setPrintInvoice] = useState<BillingRecord | null>(null);
   const isInternalAdmin = user?.role === "admin" || user?.role === "super_admin";
   const isSuperAdmin = user?.role === "super_admin";
 
@@ -189,17 +195,37 @@ export default function AdminDashboardPage() {
   const revenueTotal = useMemo(
     () =>
       paidBilling?.summary?.total ??
-      filteredPaidRecords.reduce((sum, item) => sum + item.total, 0),
+      filteredPaidRecords.reduce((sum, item) => sum + item.grandTotal, 0),
     [filteredPaidRecords, paidBilling?.summary?.total],
   );
   const billingTotal = useMemo(
-    () => billingQueue.reduce((sum, item) => sum + item.total, 0),
+    () => billingQueue.reduce((sum, item) => sum + item.grandTotal, 0),
     [billingQueue],
   );
 
   async function handleLogout() {
     await authClient.signOut();
     router.replace("/staff");
+  }
+
+  function invoiceRows(record: BillingRecord) {
+    return [
+      ["Jasa Konsultasi Dokter", record.biayaJasaDokter || 120000] as [string, number],
+      ["Administrasi", 50000] as [string, number],
+      ...(record.resepObat ?? []).map((medicine) => {
+        const qty = Math.max(Number(medicine.qty ?? 1), 1);
+        return [
+          `${medicine.nama} @ ${formatCurrency(medicine.harga)} x ${qty}`,
+          medicine.harga * qty,
+        ] as [string, number];
+      }),
+      ["Covered by BPJS", -record.potonganAsuransi] as [string, number],
+    ].filter(([, value]) => value !== 0);
+  }
+
+  function printPatientInvoice(record: BillingRecord) {
+    setPrintInvoice(record);
+    window.setTimeout(() => window.print(), 100);
   }
 
   async function completePrescription(record: PharmacyRecord) {
@@ -233,12 +259,18 @@ export default function AdminDashboardPage() {
 
     if (response.ok) {
       await Promise.all([mutateBilling(), mutatePaidBilling(), mutatePharmacy()]);
-      setBillingMessage(`Pembayaran ${formatCurrency(record.total)} sudah lunas.`);
+      setBillingMessage(`Pembayaran ${formatCurrency(record.grandTotal)} sudah lunas.`);
       return;
     }
 
     setBillingMessage(payload.message ?? "Gagal mengonfirmasi pembayaran.");
   }
+
+  useEffect(() => {
+    const cleanup = () => setPrintInvoice(null);
+    window.addEventListener("afterprint", cleanup);
+    return () => window.removeEventListener("afterprint", cleanup);
+  }, []);
 
   if (session.isPending || !user || !isInternalAdmin) {
     return (
@@ -250,7 +282,66 @@ export default function AdminDashboardPage() {
 
   return (
     <main className="min-h-screen bg-[#F8FAFC] px-4 py-6 text-slate-950">
-      <div className="hidden print:block absolute inset-0 bg-white p-10 text-black">
+      {printInvoice && (
+        <div className="hidden print:block fixed inset-0 bg-white p-6 text-black">
+          <div className="mx-auto w-[340px] border border-slate-300 p-5 font-sans">
+            <p className="text-right text-[10px] font-semibold uppercase text-slate-400">
+              Salinan Resmi Administrasi RSU TrixSehat
+            </p>
+            <div className="mt-2 text-center">
+              <img
+                src="/trixsehat-icon.png"
+                alt="TrixSehat Logo"
+                className="mx-auto h-10 w-10 object-contain"
+              />
+              <p className="mt-2 text-lg font-bold">RSU TrixSehat</p>
+              <p className="text-[11px] text-slate-600">
+                Invoice Pembayaran Pasien
+              </p>
+            </div>
+            <div className="my-4 border-t border-dashed border-slate-300" />
+            <div className="space-y-1 text-xs">
+              <div className="flex justify-between gap-3">
+                <span>ID Transaksi</span>
+                <span className="font-mono font-semibold">
+                  {printInvoice.id.slice(0, 12).toUpperCase()}
+                </span>
+              </div>
+              <div className="flex justify-between gap-3">
+                <span>Nama Pasien</span>
+                <span className="text-right font-semibold">
+                  {printInvoice.namaPasien ?? "Pasien TrixSehat"}
+                </span>
+              </div>
+              <div className="flex justify-between gap-3">
+                <span>Status</span>
+                <span className="font-mono font-bold text-emerald-700">
+                  LUNAS
+                </span>
+              </div>
+            </div>
+            <div className="my-4 border-t border-dashed border-slate-300" />
+            <div className="space-y-2 text-xs">
+              {invoiceRows(printInvoice).map(([label, value]) => (
+                <div key={label} className="flex justify-between gap-3">
+                  <span>{label}</span>
+                  <span className="font-mono font-semibold">
+                    {formatCurrency(value)}
+                  </span>
+                </div>
+              ))}
+            </div>
+            <div className="my-4 border-t border-dashed border-slate-300" />
+            <div className="flex items-center justify-between text-sm font-bold">
+              <span>Total</span>
+              <span className="font-mono">
+                {formatCurrency(printInvoice.grandTotal)}
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+      <div className={cn("hidden print:block absolute inset-0 bg-white p-10 text-black", printInvoice && "print:hidden")}>
         <div className="border-b-2 border-black pb-5 text-center">
           <h1 className="font-sans text-2xl font-bold">RSU TrixSehat</h1>
           <p className="mt-1 text-sm">
@@ -293,7 +384,7 @@ export default function AdminDashboardPage() {
                   {record.poliklinik ?? record.deskripsi}
                 </td>
                 <td className="border border-black px-3 py-2 font-mono">
-                  {formatCurrency(record.total)}
+                  {formatCurrency(record.grandTotal)}
                 </td>
               </tr>
             ))}
@@ -379,7 +470,10 @@ export default function AdminDashboardPage() {
             TrixSehat Operations Dashboard
           </p>
           <h1 className="mt-2 font-sans text-3xl font-bold">
-            Selamat bekerja, {user.name ?? "Admin Staff TrixSehat"}
+            Selamat bekerja,{" "}
+            <span className="font-extrabold text-teal-950">
+              {user.name ?? "Admin Staff TrixSehat"}
+            </span>
           </h1>
           <p className="mt-2 max-w-3xl text-slate-600">
             Kelola antrean resep farmasi dan konfirmasi pembayaran pasien dalam
@@ -499,12 +593,12 @@ export default function AdminDashboardPage() {
                   const jasaKonsultasi = record.biayaJasaDokter || 120000;
                   const administrasi = 50000;
                   const farmasi = record.biayaObat || 0;
-                  const rows = [
-                    ["Jasa Konsultasi Dokter", jasaKonsultasi],
-                    ["Administrasi", administrasi],
-                    ["Farmasi", farmasi],
-                  ] as const;
-                  const total = record.total || rows.reduce((sum, [, value]) => sum + value, 0);
+                  const rows = invoiceRows({
+                    ...record,
+                    biayaJasaDokter: jasaKonsultasi,
+                    biayaObat: farmasi,
+                  });
+                  const total = record.grandTotal ?? Math.max(record.total - record.potonganAsuransi, 0);
 
                   return (
                     <div key={record.id} className="rounded-3xl border bg-slate-50/70 p-5">
@@ -518,6 +612,10 @@ export default function AdminDashboardPage() {
                           </h2>
                           <p className="mt-1 text-xs text-slate-500">
                             {record.poliklinik ?? "Kunjungan pasien"} | {record.dokter ?? "Dokter TrixSehat"}
+                          </p>
+                          <p className="mt-1 text-xs font-medium text-[#0F766E]">
+                            {record.metodePembayaran ?? "Mandiri"}
+                            {record.noAsuransi ? ` - ${record.noAsuransi}` : ""}
                           </p>
                         </div>
                         <Badge className="rounded-full bg-rose-50 text-rose-700">
@@ -633,9 +731,19 @@ export default function AdminDashboardPage() {
                           {formatDateTime(getAccountingDate(record))}
                         </p>
                       </div>
-                      <p className="font-mono font-bold text-[#0F766E]">
-                        {formatCurrency(record.total)}
-                      </p>
+                      <div className="flex shrink-0 items-center gap-3">
+                        <p className="font-mono font-bold text-[#0F766E]">
+                          {formatCurrency(record.grandTotal)}
+                        </p>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => printPatientInvoice(record)}
+                          className="rounded-full border-teal-100 bg-white text-xs text-[#0F766E] hover:bg-teal-50"
+                        >
+                          Lihat/Cetak Invoice Pasien
+                        </Button>
+                      </div>
                     </div>
                   ))
                 )}

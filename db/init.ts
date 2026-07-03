@@ -29,7 +29,9 @@ export function ensureDatabase() {
       displayUsername TEXT,
       phoneNumber TEXT,
       nik TEXT,
-      address TEXT
+      address TEXT,
+      nomorBpjs TEXT,
+      statusBpjs TEXT NOT NULL DEFAULT 'Non-Aktif'
     );
     CREATE UNIQUE INDEX IF NOT EXISTS user_email_unique ON user(email);
     CREATE UNIQUE INDEX IF NOT EXISTS user_username_unique ON user(username);
@@ -88,6 +90,9 @@ export function ensureDatabase() {
       tgl_kunjungan TEXT NOT NULL,
       poliklinik TEXT NOT NULL DEFAULT 'Poliklinik Kebidanan & Kandungan (Obgyn)',
       dokter TEXT NOT NULL DEFAULT 'dr. Coralin Santoso, Sp.OG',
+      jam_kunjungan TEXT NOT NULL DEFAULT '09:00',
+      metode_pembayaran TEXT NOT NULL DEFAULT 'Mandiri',
+      no_asuransi TEXT,
       keluhan TEXT,
       alasan_batal TEXT,
       status TEXT NOT NULL DEFAULT 'MENUNGGU',
@@ -115,6 +120,8 @@ export function ensureDatabase() {
       biaya_jasa_dokter INTEGER NOT NULL DEFAULT 0,
       biaya_obat INTEGER NOT NULL DEFAULT 0,
       total INTEGER NOT NULL DEFAULT 0,
+      potongan_asuransi INTEGER NOT NULL DEFAULT 0,
+      grand_total INTEGER NOT NULL DEFAULT 0,
       status TEXT NOT NULL DEFAULT 'TERTUNDA',
       tgl_lunas INTEGER,
       createdAt INTEGER NOT NULL DEFAULT (unixepoch())
@@ -136,6 +143,14 @@ export function ensureDatabase() {
       tgl_notif INTEGER NOT NULL DEFAULT (unixepoch()),
       isRead INTEGER NOT NULL DEFAULT 0
     );
+
+    CREATE TABLE IF NOT EXISTS jadwal_dokter (
+      id TEXT PRIMARY KEY NOT NULL,
+      dokter_id TEXT NOT NULL REFERENCES user(id) ON DELETE CASCADE,
+      jam_mulai TEXT NOT NULL,
+      jam_selesai TEXT NOT NULL,
+      kuota INTEGER NOT NULL DEFAULT 8
+    );
   `);
 
   addColumnIfMissing("user", "username", "TEXT");
@@ -143,6 +158,8 @@ export function ensureDatabase() {
   addColumnIfMissing("user", "phoneNumber", "TEXT");
   addColumnIfMissing("user", "nik", "TEXT");
   addColumnIfMissing("user", "address", "TEXT");
+  addColumnIfMissing("user", "nomorBpjs", "TEXT");
+  addColumnIfMissing("user", "statusBpjs", "TEXT NOT NULL DEFAULT 'Non-Aktif'");
   addColumnIfMissing("account", "expiresAt", "INTEGER");
   addColumnIfMissing("kamar_vk_rawat", "tipe_masuk", "TEXT");
   migratePendaftaranSchema();
@@ -156,9 +173,19 @@ export function ensureDatabase() {
     "dokter",
     "TEXT NOT NULL DEFAULT 'dr. Coralin Santoso, Sp.OG'",
   );
+  addColumnIfMissing("pendaftaran", "jam_kunjungan", "TEXT NOT NULL DEFAULT '09:00'");
+  addColumnIfMissing("pendaftaran", "metode_pembayaran", "TEXT NOT NULL DEFAULT 'Mandiri'");
+  addColumnIfMissing("pendaftaran", "no_asuransi", "TEXT");
   addColumnIfMissing("pendaftaran", "keluhan", "TEXT");
   addColumnIfMissing("pendaftaran", "alasan_batal", "TEXT");
   addColumnIfMissing("pembayaran_billing", "tgl_lunas", "INTEGER");
+  addColumnIfMissing("pembayaran_billing", "potongan_asuransi", "INTEGER NOT NULL DEFAULT 0");
+  addColumnIfMissing("pembayaran_billing", "grand_total", "INTEGER NOT NULL DEFAULT 0");
+  sqlite.exec(`
+    UPDATE pembayaran_billing
+    SET grand_total = total
+    WHERE grand_total = 0 AND total > 0 AND potongan_asuransi = 0;
+  `);
   sqlite.exec(`
     UPDATE kamar_vk_rawat
     SET status = 'Tidak Aktif'
@@ -209,6 +236,9 @@ function migratePendaftaranSchema() {
       tgl_kunjungan TEXT NOT NULL,
       poliklinik TEXT NOT NULL DEFAULT 'Poliklinik Kebidanan & Kandungan (Obgyn)',
       dokter TEXT NOT NULL DEFAULT 'dr. Coralin Santoso, Sp.OG',
+      jam_kunjungan TEXT NOT NULL DEFAULT '09:00',
+      metode_pembayaran TEXT NOT NULL DEFAULT 'Mandiri',
+      no_asuransi TEXT,
       keluhan TEXT,
       alasan_batal TEXT,
       status TEXT NOT NULL DEFAULT 'MENUNGGU',
@@ -221,7 +251,8 @@ function migratePendaftaranSchema() {
     sqlite.exec(`
     INSERT INTO pendaftaran_new (
       id, nomor_antrean, nik, nama_pasien, tgl_kunjungan,
-      poliklinik, dokter, keluhan, alasan_batal, status, userId, createdAt
+      poliklinik, dokter, jam_kunjungan, metode_pembayaran, no_asuransi,
+      keluhan, alasan_batal, status, userId, createdAt
     )
     SELECT
       id_daftar,
@@ -231,6 +262,9 @@ function migratePendaftaranSchema() {
       tgl_kunjungan,
       'Poliklinik Kebidanan & Kandungan (Obgyn)',
       'dr. Coralin Santoso, Sp.OG',
+      '09:00',
+      'Mandiri',
+      NULL,
       NULL,
       NULL,
       CASE
@@ -276,15 +310,19 @@ function seedOperationalData() {
   }
 
   const insertWardRoom = sqlite.prepare(`
-    INSERT OR REPLACE INTO kamar_vk_rawat (
+    INSERT INTO kamar_vk_rawat (
       id_kamar, jenis_kamar, status, id_pasien, tipe_masuk
     ) VALUES (
       @idKamar, @jenisKamar, @status, NULL, NULL
     );
   `);
-  sqlite.exec("DELETE FROM log_aktivitas_vk;");
-  sqlite.exec("DELETE FROM kamar_vk_rawat;");
-  rsuWardRooms.forEach((room) => insertWardRoom.run(room));
+  const [{ value: wardRoomCount }] = db
+    .select({ value: count() })
+    .from(kamarVkRawat)
+    .all();
+  if (wardRoomCount === 0) {
+    rsuWardRooms.forEach((room) => insertWardRoom.run(room));
+  }
 
   const [{ value: rmeCount }] = db
     .select({ value: count() })

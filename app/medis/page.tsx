@@ -6,9 +6,11 @@ import useSWR from "swr";
 import {
   Activity,
   BedDouble,
+  CalendarDays,
   ClipboardPlus,
   LogOut,
   Pill,
+  Plus,
   Stethoscope,
 } from "lucide-react";
 
@@ -68,6 +70,24 @@ type KamarApi = {
   }>;
 };
 
+type JadwalApi = {
+  data: {
+    id: string;
+    dokterId: string;
+    jamMulai: string;
+    jamSelesai: string;
+    kuota: number;
+  } | null;
+  slots: string[];
+};
+
+type PrescriptionDraft = {
+  id: string;
+  nama: string;
+  dosis: string;
+  harga: number;
+};
+
 type RoomStatus = "Tersedia" | "Terisi" | "Sedang Dibersihkan" | "Tidak Aktif";
 
 const roomStatuses: RoomStatus[] = [
@@ -92,6 +112,12 @@ const roomSelectClass: Record<RoomStatus, string> = {
     "border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100/70 focus:border-amber-500 focus:ring-amber-100",
   "Tidak Aktif":
     "border-slate-200 bg-slate-100 text-slate-500 hover:bg-slate-200/70 focus:border-slate-400 focus:ring-slate-100",
+};
+const queueStatusClass: Record<BookingRecord["status"], string> = {
+  MENUNGGU: "bg-amber-50 text-amber-700",
+  DIPANGGIL: "animate-pulse bg-emerald-500 text-white",
+  SELESAI: "bg-emerald-50 text-emerald-700",
+  BATAL: "bg-rose-50 text-rose-700",
 };
 const doctorNameByEmail: Record<string, string> = {
   "dr.coralin@trixsehat.com": "dr. Coralin Santoso, Sp.OG",
@@ -144,7 +170,16 @@ export default function MedisDashboardPage() {
   );
   const [cancelTarget, setCancelTarget] = useState<BookingRecord | null>(null);
   const [doctorMessage, setDoctorMessage] = useState("");
+  const [scheduleMessage, setScheduleMessage] = useState("");
   const [nurseMessage, setNurseMessage] = useState("");
+  const [prescriptionDrafts, setPrescriptionDrafts] = useState<PrescriptionDraft[]>([
+    {
+      id: crypto.randomUUID(),
+      nama: "Asam folat 400 mcg",
+      dosis: "1 tablet, 1x sehari",
+      harga: 42000,
+    },
+  ]);
 
   const isSuperAdmin = user?.role === "super_admin";
   const isDoctor = Boolean(user?.email && doctorNameByEmail[user.email]);
@@ -167,6 +202,11 @@ export default function MedisDashboardPage() {
     user?.role === "medis" || isSuperAdmin ? "/api/kamar" : null,
     fetcher,
     { refreshInterval: 5000 },
+  );
+  const { data: schedule, mutate: mutateSchedule } = useSWR<JadwalApi>(
+    isDoctor || isSuperAdmin ? "/api/jadwal" : null,
+    fetcher,
+    { refreshInterval: 10000 },
   );
 
   const activeQueue = useMemo(
@@ -262,11 +302,12 @@ export default function MedisDashboardPage() {
 
     setDoctorMessage("Menyimpan EMR dan mengirim resep...");
     const form = new FormData(event.currentTarget);
-    const resepObat = [1, 2, 3]
-      .map((index) => ({
-        nama: String(form.get(`obat${index}`) ?? "").trim(),
-        dosis: String(form.get(`dosis${index}`) ?? "").trim(),
-        harga: Number(form.get(`harga${index}`) ?? 0),
+    const resepObat = prescriptionDrafts
+      .map((item) => ({
+        nama: item.nama.trim(),
+        dosis: item.dosis.trim(),
+        harga: Number(item.harga ?? 0),
+        qty: 1,
       }))
       .filter((item) => item.nama);
 
@@ -286,6 +327,14 @@ export default function MedisDashboardPage() {
 
     if (response.ok) {
       setSelectedPatient(null);
+      setPrescriptionDrafts([
+        {
+          id: crypto.randomUUID(),
+          nama: "Asam folat 400 mcg",
+          dosis: "1 tablet, 1x sehari",
+          harga: 42000,
+        },
+      ]);
       await mutateQueue();
       setDoctorMessage(
         "Rekam Medis (EMR) & Resep Digital otomatis tersinkronisasi ke Apotek dan Kasir.",
@@ -294,6 +343,55 @@ export default function MedisDashboardPage() {
     }
 
     setDoctorMessage(payload.message ?? "Gagal menyimpan EMR.");
+  }
+
+  function updatePrescriptionDraft(
+    id: string,
+    field: keyof Omit<PrescriptionDraft, "id">,
+    value: string,
+  ) {
+    setPrescriptionDrafts((items) =>
+      items.map((item) =>
+        item.id === id
+          ? {
+              ...item,
+              [field]: field === "harga" ? Number(value) : value,
+            }
+          : item,
+      ),
+    );
+  }
+
+  function addPrescriptionDraft() {
+    setPrescriptionDrafts((items) => [
+      ...items,
+      { id: crypto.randomUUID(), nama: "", dosis: "", harga: 0 },
+    ]);
+  }
+
+  async function saveDoctorSchedule(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    setScheduleMessage("Menyimpan jadwal praktek...");
+
+    const response = await fetch("/api/jadwal", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jamMulai: form.get("jamMulai"),
+        jamSelesai: form.get("jamSelesai"),
+        kuota: Number(form.get("kuota") ?? 8),
+      }),
+    });
+    const payload = await response.json().catch(() => ({}));
+
+    if (response.ok) {
+      await mutateSchedule();
+      setScheduleMessage("Jadwal praktek hari ini tersimpan.");
+      return;
+    }
+
+    setScheduleMessage(payload.message ?? "Gagal menyimpan jadwal.");
   }
 
   async function handleLogout() {
@@ -368,7 +466,7 @@ export default function MedisDashboardPage() {
     <main className="min-h-screen bg-[#F8FAFC] px-4 py-6 font-sans text-slate-950">
       <div className="pointer-events-none fixed right-[-8rem] top-[-8rem] h-80 w-80 rounded-full bg-teal-300/25 blur-3xl" />
       <div className="pointer-events-none fixed bottom-[-8rem] left-[-8rem] h-96 w-96 rounded-full bg-emerald-300/20 blur-3xl" />
-      <div className="relative mx-auto max-w-7xl space-y-6">
+      <div className="relative mx-auto max-w-7xl space-y-6 px-4 py-8">
         <nav className="sticky top-4 z-30 rounded-[2rem] border border-white/80 bg-white/80 px-5 py-4 shadow-xl backdrop-blur-xl">
           <div className="flex flex-wrap items-center justify-between gap-4">
             <button
@@ -415,7 +513,8 @@ export default function MedisDashboardPage() {
             TrixSehat Clinical Dashboard
           </p>
           <h1 className="mt-2 font-sans text-3xl font-bold">
-            Selamat bekerja, {displayName}
+            Selamat bekerja,{" "}
+            <span className="font-extrabold text-teal-950">{displayName}</span>
           </h1>
           <p className="mt-2 text-slate-600">
             {isDoctor
@@ -425,7 +524,72 @@ export default function MedisDashboardPage() {
         </header>
 
         {isDoctor ? (
-          <section className="grid gap-6 lg:grid-cols-[0.9fr_1.3fr]">
+          <section className="space-y-8">
+            <Card className="rounded-[1.7rem] bg-white shadow-lg">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 font-sans font-bold">
+                  <CalendarDays className="h-5 w-5 text-[#0F766E]" />
+                  Pengaturan Jadwal Praktek Hari Ini
+                </CardTitle>
+                <CardDescription>
+                  Slot booking pasien dibuat otomatis per 30 menit dari rentang
+                  jadwal ini.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <form
+                  onSubmit={saveDoctorSchedule}
+                  className="grid gap-3 md:grid-cols-[1fr_1fr_100px_auto]"
+                >
+                  <label className="space-y-2">
+                    <span className="text-xs font-medium text-slate-500">
+                      Jam Mulai
+                    </span>
+                    <input
+                      name="jamMulai"
+                      type="time"
+                      required
+                      defaultValue={schedule?.data?.jamMulai ?? "08:00"}
+                      className="h-11 w-full rounded-xl border bg-slate-50 px-3 font-mono outline-none ring-[#0F766E] focus:ring-2"
+                    />
+                  </label>
+                  <label className="space-y-2">
+                    <span className="text-xs font-medium text-slate-500">
+                      Jam Selesai
+                    </span>
+                    <input
+                      name="jamSelesai"
+                      type="time"
+                      required
+                      defaultValue={schedule?.data?.jamSelesai ?? "12:00"}
+                      className="h-11 w-full rounded-xl border bg-slate-50 px-3 font-mono outline-none ring-[#0F766E] focus:ring-2"
+                    />
+                  </label>
+                  <label className="space-y-2">
+                    <span className="text-xs font-medium text-slate-500">
+                      Kuota
+                    </span>
+                    <input
+                      name="kuota"
+                      type="number"
+                      min={1}
+                      defaultValue={schedule?.data?.kuota ?? 8}
+                      className="h-11 w-full rounded-xl border bg-slate-50 px-3 font-mono outline-none ring-[#0F766E] focus:ring-2"
+                    />
+                  </label>
+                  <Button className="self-end rounded-full bg-[#0F766E] text-white hover:bg-teal-700">
+                    Simpan
+                  </Button>
+                </form>
+                {scheduleMessage && (
+                  <p className="mt-3 text-xs text-slate-500">
+                    {scheduleMessage}
+                  </p>
+                )}
+              </CardContent>
+            </Card>
+
+            <div className="grid gap-8 lg:grid-cols-[40fr_60fr]">
             <Card className="rounded-[1.7rem] bg-white shadow-lg">
               <CardHeader>
                 <CardTitle className="flex items-center gap-2 font-sans font-bold">
@@ -461,7 +625,14 @@ export default function MedisDashboardPage() {
                             NIK {patient.nik} | {patient.poliklinik}
                           </p>
                         </div>
-                        <Badge>{patient.status}</Badge>
+                        <Badge
+                          className={cn(
+                            "rounded-full",
+                            queueStatusClass[patient.status],
+                          )}
+                        >
+                          {patient.status}
+                        </Badge>
                       </div>
                       <div className="mt-4 flex flex-wrap gap-2">
                         <Button
@@ -582,32 +753,45 @@ export default function MedisDashboardPage() {
                         <Pill className="h-4 w-4 text-[#0F766E]" />
                         Resep Obat
                       </div>
-                      {[1, 2, 3].map((index) => (
-                        <div key={index} className="grid gap-2 md:grid-cols-[1fr_1fr_120px]">
+                      {prescriptionDrafts.map((item) => (
+                        <div key={item.id} className="grid gap-2 md:grid-cols-[1fr_1fr_140px]">
                           <input
-                            name={`obat${index}`}
                             placeholder="Nama obat"
-                            defaultValue={
-                              index === 1 ? "Asam folat 400 mcg" : ""
+                            value={item.nama}
+                            onChange={(event) =>
+                              updatePrescriptionDraft(item.id, "nama", event.target.value)
                             }
                             className="h-10 rounded-xl border bg-white px-3 text-sm outline-none ring-[#0F766E] focus:ring-2"
                           />
                           <input
-                            name={`dosis${index}`}
                             placeholder="Dosis"
-                            defaultValue={index === 1 ? "1 tablet, 1x sehari" : ""}
+                            value={item.dosis}
+                            onChange={(event) =>
+                              updatePrescriptionDraft(item.id, "dosis", event.target.value)
+                            }
                             className="h-10 rounded-xl border bg-white px-3 text-sm outline-none ring-[#0F766E] focus:ring-2"
                           />
                           <input
-                            name={`harga${index}`}
                             type="number"
                             min={0}
-                            placeholder="Harga"
-                            defaultValue={index === 1 ? 42000 : 0}
+                            placeholder="Harga satuan"
+                            value={item.harga}
+                            onChange={(event) =>
+                              updatePrescriptionDraft(item.id, "harga", event.target.value)
+                            }
                             className="h-10 rounded-xl border bg-white px-3 font-mono text-sm outline-none ring-[#0F766E] focus:ring-2"
                           />
                         </div>
                       ))}
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={addPrescriptionDraft}
+                        className="rounded-full border-teal-100 bg-white text-[#0F766E] hover:bg-teal-50"
+                      >
+                        <Plus className="h-4 w-4" />
+                        Tambah Obat
+                      </Button>
                     </div>
                     <label className="flex items-start gap-3 rounded-2xl border border-teal-100 bg-teal-50/60 p-4">
                       <input
@@ -633,6 +817,7 @@ export default function MedisDashboardPage() {
                 )}
               </CardContent>
             </Card>
+            </div>
           </section>
         ) : (
           <section className="grid gap-6 xl:grid-cols-[0.75fr_1.35fr]">
@@ -665,9 +850,19 @@ export default function MedisDashboardPage() {
                           <p className="truncate font-semibold">
                             {item.namaPasien}
                           </p>
-                          <p className="text-sm text-slate-600">
-                            {item.keluhan ?? "Darurat maternal"} | {item.status}
-                          </p>
+                          <div className="mt-2 flex flex-wrap items-center gap-2">
+                            <span className="text-sm text-slate-600">
+                              {item.keluhan ?? "Darurat maternal"}
+                            </span>
+                            <Badge
+                              className={cn(
+                                "rounded-full",
+                                queueStatusClass[item.status],
+                              )}
+                            >
+                              {item.status}
+                            </Badge>
+                          </div>
                         </div>
                         <Button
                           type="button"

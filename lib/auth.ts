@@ -45,6 +45,17 @@ export const auth = betterAuth({
         required: false,
         input: true,
       },
+      nomorBpjs: {
+        type: "string",
+        required: false,
+        input: true,
+      },
+      statusBpjs: {
+        type: "string",
+        required: false,
+        input: true,
+        defaultValue: "Non-Aktif",
+      },
     },
   },
   plugins: [username(), nextCookies()],

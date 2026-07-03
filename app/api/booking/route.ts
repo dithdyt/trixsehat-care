@@ -14,6 +14,9 @@ type BookingBody = {
   tglKunjungan?: string;
   poliklinik?: string;
   dokter?: string;
+  jamKunjungan?: string;
+  metodePembayaran?: "Mandiri" | "Asuransi";
+  noAsuransi?: string;
   keluhan?: string;
 };
 
@@ -178,6 +181,9 @@ export async function POST(request: Request) {
     body.tglKunjungan?.trim() || new Date().toISOString().slice(0, 10);
   const poliklinik = body.poliklinik?.trim() || DEFAULT_POLIKLINIK;
   const dokter = body.dokter?.trim() || DEFAULT_DOKTER;
+  const jamKunjungan = body.jamKunjungan?.trim() || "09:00";
+  const metodePembayaran = body.metodePembayaran ?? "Mandiri";
+  const noAsuransi = body.noAsuransi?.trim() || null;
   const keluhan = body.keluhan?.trim() || null;
 
   if (!nik || nik.length < 8) {
@@ -229,6 +235,9 @@ export async function POST(request: Request) {
     tglKunjungan,
     poliklinik,
     dokter,
+    jamKunjungan,
+    metodePembayaran,
+    noAsuransi,
     keluhan,
     status: "MENUNGGU" as const,
     userId,

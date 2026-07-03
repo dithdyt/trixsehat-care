@@ -28,6 +28,8 @@ export const user = sqliteTable(
     phoneNumber: text("phoneNumber"),
     nik: text("nik"),
     address: text("address"),
+    nomorBpjs: text("nomorBpjs"),
+    statusBpjs: text("statusBpjs").notNull().default("Non-Aktif"),
   },
   (table) => ({
     emailIdx: uniqueIndex("user_email_unique").on(table.email),
@@ -118,6 +120,13 @@ export const pendaftaran = sqliteTable("pendaftaran", {
   tglKunjungan: text("tgl_kunjungan").notNull(),
   poliklinik: text("poliklinik").notNull().default("Poliklinik Kebidanan & Kandungan (Obgyn)"),
   dokter: text("dokter").notNull().default("dr. Coralin Santoso, Sp.OG"),
+  jamKunjungan: text("jam_kunjungan").notNull().default("09:00"),
+  metodePembayaran: text("metode_pembayaran", {
+    enum: ["Mandiri", "BPJS", "Asuransi"],
+  })
+    .notNull()
+    .default("Mandiri"),
+  noAsuransi: text("no_asuransi"),
   keluhan: text("keluhan"),
   alasanBatal: text("alasan_batal"),
   status: text("status", {
@@ -129,6 +138,16 @@ export const pendaftaran = sqliteTable("pendaftaran", {
   createdAt: integer("createdAt", { mode: "timestamp" })
     .notNull()
     .default(sql`(unixepoch())`),
+});
+
+export const jadwalDokter = sqliteTable("jadwal_dokter", {
+  id: text("id").primaryKey(),
+  dokterId: text("dokter_id")
+    .notNull()
+    .references(() => user.id, { onDelete: "cascade" }),
+  jamMulai: text("jam_mulai").notNull(),
+  jamSelesai: text("jam_selesai").notNull(),
+  kuota: integer("kuota").notNull().default(8),
 });
 
 export const rekamMedisElektronik = sqliteTable("rekam_medis_elektronik", {
@@ -168,6 +187,8 @@ export const pembayaranBilling = sqliteTable("pembayaran_billing", {
   biayaJasaDokter: integer("biaya_jasa_dokter").notNull().default(0),
   biayaObat: integer("biaya_obat").notNull().default(0),
   total: integer("total").notNull().default(0),
+  potonganAsuransi: integer("potongan_asuransi").notNull().default(0),
+  grandTotal: integer("grand_total").notNull().default(0),
   status: text("status", { enum: ["TERTUNDA", "LUNAS"] })
     .notNull()
     .default("TERTUNDA"),
@@ -212,8 +233,16 @@ export const userRelations = relations(user, ({ many }) => ({
   rekamMedis: many(rekamMedisElektronik),
   kamar: many(kamarVkRawat),
   billing: many(pembayaranBilling),
+  jadwalDokter: many(jadwalDokter),
   logAktivitasVk: many(logAktivitasVk),
   notifikasi: many(notifikasi),
+}));
+
+export const jadwalDokterRelations = relations(jadwalDokter, ({ one }) => ({
+  dokter: one(user, {
+    fields: [jadwalDokter.dokterId],
+    references: [user.id],
+  }),
 }));
 
 export const sessionRelations = relations(session, ({ one }) => ({

@@ -31,16 +31,24 @@ type ResepInput = {
   qty?: number;
 };
 
-function calculateBillingTotals(resepObat: ResepInput[]) {
+function calculateBillingTotals(
+  resepObat: ResepInput[],
+  hasActiveBpjs = false,
+) {
   const biayaObat = resepObat.reduce((sum, item) => {
     const qty = Math.max(Number(item.qty ?? 1), 1);
     return sum + Number(item.harga ?? 0) * qty;
   }, 0);
 
+  const total = BIAYA_JASA_DOKTER + BIAYA_ADMINISTRASI + biayaObat;
+  const potonganAsuransi = hasActiveBpjs ? total : 0;
+
   return {
     biayaJasaDokter: BIAYA_JASA_DOKTER,
     biayaObat,
-    total: BIAYA_JASA_DOKTER + BIAYA_ADMINISTRASI + biayaObat,
+    total,
+    potonganAsuransi,
+    grandTotal: Math.max(total - potonganAsuransi, 0),
   };
 }
 
@@ -138,7 +146,18 @@ export async function POST(request: Request) {
 
       const resepObat =
         body.resepObat?.filter((item) => item.nama.trim()) ?? SIMULATED_RESEP;
-      const billingTotals = calculateBillingTotals(resepObat);
+      const patientProfile = patientUserId
+        ? tx
+            .select({ nomorBpjs: user.nomorBpjs, statusBpjs: user.statusBpjs })
+            .from(user)
+            .where(eq(user.id, patientUserId))
+            .limit(1)
+            .get()
+        : null;
+      const hasActiveBpjs = Boolean(
+        patientProfile?.nomorBpjs && patientProfile.statusBpjs === "Aktif",
+      );
+      const billingTotals = calculateBillingTotals(resepObat, hasActiveBpjs);
       const idRme = crypto.randomUUID();
 
       const rme = {
@@ -244,7 +263,16 @@ export async function POST(request: Request) {
   }
 
   const result = db.transaction((tx) => {
-    const billingTotals = calculateBillingTotals(SIMULATED_RESEP);
+    const patientProfile = tx
+      .select({ nomorBpjs: user.nomorBpjs, statusBpjs: user.statusBpjs })
+      .from(user)
+      .where(eq(user.id, session.user.id))
+      .limit(1)
+      .get();
+    const billingTotals = calculateBillingTotals(
+      SIMULATED_RESEP,
+      Boolean(patientProfile?.nomorBpjs && patientProfile.statusBpjs === "Aktif"),
+    );
     const idRme = crypto.randomUUID();
 
     const rme = {

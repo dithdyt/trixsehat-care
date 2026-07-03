@@ -24,12 +24,16 @@ export async function PATCH(request: Request) {
     phoneNumber?: string;
     nik?: string;
     address?: string;
+    nomorBpjs?: string;
   };
 
   const name = body.name?.trim() ?? "";
   const phoneNumber = body.phoneNumber?.trim() ?? "";
   const nik = body.nik?.trim() ?? "";
   const address = body.address?.trim() ?? "";
+  const nomorBpjs = body.nomorBpjs?.replace(/\D/g, "") ?? "";
+  const statusBpjs =
+    nomorBpjs.length >= 11 && nomorBpjs.length <= 13 ? "Aktif" : "Non-Aktif";
 
   if (!name || !phoneNumber || !nik || !address) {
     return NextResponse.json(
@@ -57,6 +61,8 @@ export async function PATCH(request: Request) {
       phoneNumber,
       nik,
       address,
+      nomorBpjs,
+      statusBpjs,
       updatedAt: new Date(),
     })
     .where(eq(user.id, session.user.id))
@@ -70,6 +76,8 @@ export async function PATCH(request: Request) {
       phoneNumber: user.phoneNumber,
       nik: user.nik,
       address: user.address,
+      nomorBpjs: user.nomorBpjs,
+      statusBpjs: user.statusBpjs,
     })
     .from(user)
     .where(eq(user.id, session.user.id))

@@ -3,7 +3,13 @@ import { NextResponse } from "next/server";
 
 import { db } from "@/db";
 import { ensureDatabase } from "@/db/init";
-import { notifikasi, pembayaranBilling, pendaftaran, user } from "@/db/schema";
+import {
+  notifikasi,
+  pembayaranBilling,
+  pendaftaran,
+  rekamMedisElektronik,
+  user,
+} from "@/db/schema";
 import { getRequestSession } from "@/lib/session";
 
 export const runtime = "nodejs";
@@ -67,10 +73,15 @@ export async function GET(request: Request) {
         nomorAntrean: pendaftaran.nomorAntrean,
         poliklinik: pendaftaran.poliklinik,
         dokter: pendaftaran.dokter,
+        metodePembayaran: pendaftaran.metodePembayaran,
+        noAsuransi: pendaftaran.noAsuransi,
+        resepObat: rekamMedisElektronik.resepObat,
         deskripsi: pembayaranBilling.deskripsi,
         biayaJasaDokter: pembayaranBilling.biayaJasaDokter,
         biayaObat: pembayaranBilling.biayaObat,
         total: pembayaranBilling.total,
+        potonganAsuransi: pembayaranBilling.potonganAsuransi,
+        grandTotal: pembayaranBilling.grandTotal,
         status: pembayaranBilling.status,
         tglLunas: pembayaranBilling.tglLunas,
         createdAt: pembayaranBilling.createdAt,
@@ -78,6 +89,10 @@ export async function GET(request: Request) {
       .from(pembayaranBilling)
       .leftJoin(user, eq(pembayaranBilling.userId, user.id))
       .leftJoin(pendaftaran, eq(pembayaranBilling.idPendaftaran, pendaftaran.id))
+      .leftJoin(
+        rekamMedisElektronik,
+        eq(pembayaranBilling.idRme, rekamMedisElektronik.idRme),
+      )
       .where(whereClause)
       .orderBy(
         desc(
@@ -91,7 +106,7 @@ export async function GET(request: Request) {
       statusFilter === "LUNAS"
         ? db
             .select({
-              total: sql<number>`coalesce(sum(${pembayaranBilling.total}), 0)`.mapWith(Number),
+              total: sql<number>`coalesce(sum(${pembayaranBilling.grandTotal}), 0)`.mapWith(Number),
             })
             .from(pembayaranBilling)
             .where(whereClause)
@@ -122,16 +137,42 @@ export async function GET(request: Request) {
     );
   }
 
+  const patientStatusFilter = requestedStatus === "LUNAS" ? "LUNAS" : "TERTUNDA";
   const records = db
-    .select()
+    .select({
+      id: pembayaranBilling.id,
+      userId: pembayaranBilling.userId,
+      idRme: pembayaranBilling.idRme,
+      idPendaftaran: pembayaranBilling.idPendaftaran,
+      deskripsi: pembayaranBilling.deskripsi,
+      biayaJasaDokter: pembayaranBilling.biayaJasaDokter,
+      biayaObat: pembayaranBilling.biayaObat,
+      total: pembayaranBilling.total,
+      potonganAsuransi: pembayaranBilling.potonganAsuransi,
+      grandTotal: pembayaranBilling.grandTotal,
+      status: pembayaranBilling.status,
+      tglLunas: pembayaranBilling.tglLunas,
+      createdAt: pembayaranBilling.createdAt,
+      resepObat: rekamMedisElektronik.resepObat,
+    })
     .from(pembayaranBilling)
+    .leftJoin(
+      rekamMedisElektronik,
+      eq(pembayaranBilling.idRme, rekamMedisElektronik.idRme),
+    )
     .where(
       and(
         eq(pembayaranBilling.userId, targetUserId),
-        eq(pembayaranBilling.status, "TERTUNDA"),
+        eq(pembayaranBilling.status, patientStatusFilter),
       ),
     )
-    .orderBy(desc(pembayaranBilling.createdAt))
+    .orderBy(
+      desc(
+        patientStatusFilter === "LUNAS"
+          ? pembayaranBilling.tglLunas
+          : pembayaranBilling.createdAt,
+      ),
+    )
     .all();
 
   return NextResponse.json({ data: records });
@@ -195,7 +236,7 @@ export async function PATCH(request: Request) {
           style: "currency",
           currency: "IDR",
           maximumFractionDigits: 0,
-        }).format(billing.total)} telah lunas. Terima kasih.`,
+        }).format(billing.grandTotal)} telah lunas. Terima kasih.`,
       })
       .run();
 
